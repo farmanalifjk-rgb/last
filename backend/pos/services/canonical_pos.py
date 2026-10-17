@@ -29,9 +29,12 @@ MONEY = Decimal("0.01")
 
 def decimal(value, *, field="value"):
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except Exception as exc:
         raise ValueError(f"{field} must be a valid number.") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"{field} must be a finite number.")
+    return parsed
 
 
 def money(value):
