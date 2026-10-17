@@ -86,6 +86,14 @@ class Phase6CanonicalPOSTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, Decimal("8.000"))
 
+    def test_checkout_rejects_idempotency_keys_longer_than_128_characters(self):
+        response = self._checkout(idempotency_key="x" * 129)
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("128 characters or fewer", str(response.data))
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
     def test_preview_uses_tenant_price_rule_and_tax_engine(self):
         response = self.client.post("/api/pos/preview/", {"items": [{"product_id": self.product.id, "quantity": "2.000"}]}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
