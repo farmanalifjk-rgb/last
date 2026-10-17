@@ -440,20 +440,28 @@ export function deleteUser2(id) {
     return apiJson(`/api/users/${id}/`, { method: "DELETE" });
 }
 
-export function getRoles(filters = {}) {
-    return apiList(`/api/roles/${buildQuery({ page: filters.page, page_size: filters.page_size, search: filters.search })}`);
+/**
+ * Tenant-safe role governance. The active tenant is derived by the backend
+ * from the authenticated principal; clients must not submit tenant IDs.
+ */
+export function getRoles(_filters = {}) {
+    return apiList("/api/rbac/governance/roles/");
+}
+
+export function getGovernancePermissions() {
+    return apiList("/api/rbac/governance/permissions/");
 }
 
 export function createRole(data) {
-    return apiJson("/api/roles/", { method: "POST", body: JSON.stringify(data) });
+    return apiJson("/api/rbac/governance/roles/", { method: "POST", body: JSON.stringify(data) });
 }
 
 export function updateRole(id, data) {
-    return apiJson(`/api/roles/${id}/`, { method: "PATCH", body: JSON.stringify(data) });
+    return apiJson(`/api/rbac/governance/roles/${id}/`, { method: "PATCH", body: JSON.stringify(data) });
 }
 
 export function deleteRole(id) {
-    return apiJson(`/api/roles/${id}/`, { method: "DELETE" });
+    return apiJson(`/api/rbac/governance/roles/${id}/`, { method: "DELETE" });
 }
 
 export function getTaxes(filters = {}) {
