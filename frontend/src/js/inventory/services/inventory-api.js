@@ -444,8 +444,28 @@ export function deleteUser2(id) {
  * Tenant-safe role governance. The active tenant is derived by the backend
  * from the authenticated principal; clients must not submit tenant IDs.
  */
-export function getRoles(_filters = {}) {
-    return apiList("/api/rbac/governance/roles/");
+export async function getRoles(filters = {}) {
+    const response = await apiList("/api/rbac/governance/roles/");
+    const needle = String(filters.search || "").trim().toLowerCase();
+    const filtered = needle
+        ? response.results.filter((role) =>
+            [role.label, role.key, role.description]
+                .some((value) => String(value || "").toLowerCase().includes(needle)))
+        : response.results;
+    const pageSize = Math.max(1, Number(filters.page_size) || 10);
+    const page = Math.max(1, Number(filters.page) || 1);
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    return {
+        ...response,
+        count: filtered.length,
+        page,
+        total_pages: totalPages,
+        has_next: page < totalPages,
+        has_previous: page > 1,
+        next: page < totalPages ? "next" : null,
+        previous: page > 1 ? "prev" : null,
+        results: filtered.slice((page - 1) * pageSize, page * pageSize)
+    };
 }
 
 export function getGovernancePermissions() {
