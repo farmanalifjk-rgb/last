@@ -370,6 +370,9 @@ def checkout(*, tenant, user, items, tenders, customer_id=None, discount=Decimal
     key = (idempotency_key or "").strip()
     if not key:
         raise ValueError("An Idempotency-Key is required to complete checkout safely.")
+    # Bound attacker-controlled input before hashing or querying the database.
+    if len(key) > 128:
+        raise ValueError("Idempotency-Key must be 128 characters or fewer.")
     request_hash = _checkout_request_hash(
         user=user, items=items, tenders=tenders, customer_id=customer_id, discount=discount
     )
