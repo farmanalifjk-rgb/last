@@ -120,7 +120,9 @@ async function loadRoles() {
 
 function updateStats(response) {
     const total = response.count || 0;
-    const active = response.results?.filter(r => r.is_active).length || 0;
+    const active = Number.isFinite(response.active_count)
+        ? response.active_count
+        : (response.results?.filter((role) => role.is_active).length || 0);
     
     document.getElementById("stat-roles-total").textContent = total;
     document.getElementById("stat-roles-active").textContent = active;
