@@ -178,7 +178,7 @@ function renderRolesTable(rows) {
                     ${rows.map(role => {
                         const permCount = Array.isArray(role.permissions) ? role.permissions.length : 0;
                         return `
-                        <tr class="group hover:bg-purple-50/40 transition-colors cursor-pointer" onclick="openEditRoleModalById(${Number(role.id)})">
+                        <tr class="group hover:bg-purple-50/40 transition-colors ${role.is_system ? "" : "cursor-pointer"}" onclick="${role.is_system ? "" : `openEditRoleModalById(${Number(role.id)})`}">
                             <td class="px-6 py-4">
                                 <div class="font-bold text-slate-900">${escapeHtml(role.label || role.name || role.key)}</div>
                                 <div class="text-slate-400 text-xs mt-1">${escapeHtml(role.users_count || 0)} users assigned</div>
