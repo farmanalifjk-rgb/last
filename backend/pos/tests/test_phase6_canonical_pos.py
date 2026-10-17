@@ -95,8 +95,9 @@ class Phase6CanonicalPOSTests(TestCase):
         self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
 
     def test_checkout_rejects_line_total_above_order_money_capacity_without_mutation(self):
+        PriceListItem.objects.filter(product=self.product).update(price=Decimal("99999999.99"))
         response = self._checkout(
-            items=[{"product_id": self.product.id, "quantity": "3000000000"}],
+            items=[{"product_id": self.product.id, "quantity": "101"}],
             idempotency_key="line-total-overflow",
         )
         self.assertEqual(response.status_code, 400, response.data)
