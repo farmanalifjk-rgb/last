@@ -25,6 +25,7 @@ from ..models import CashSession, CashTransaction, Customer, Order, OrderItem, P
 
 
 MONEY = Decimal("0.01")
+MAX_ORDER_MONEY = Decimal("9999999999.99")
 
 
 def decimal(value, *, field="value"):
@@ -347,7 +348,11 @@ def _quote(*, tenant, customer, items, discount):
     for product, quantity in normalized:
         unit_price = resolve_unit_price(tenant=tenant, product=product, customer=customer, quantity=quantity)
         line_subtotal = money(unit_price * quantity)
+        if line_subtotal > MAX_ORDER_MONEY:
+            raise ValueError("A cart line total exceeds the maximum supported order amount.")
         subtotal += line_subtotal
+        if subtotal > MAX_ORDER_MONEY:
+            raise ValueError("Cart subtotal exceeds the maximum supported order amount.")
         lines.append({"product": product, "quantity": quantity, "unit_price": unit_price, "subtotal": line_subtotal})
     discount = parse_discount(discount)
     if discount < 0 or discount > subtotal:
@@ -362,7 +367,10 @@ def _quote(*, tenant, customer, items, discount):
         added_tax += money(amount_added_to_price(tax_rows))
         line["tax"] = line_tax
     # Inclusive tax is already inside the line prices; only exclusive tax is added.
-    return lines, money(subtotal), discount, money(tax), money(subtotal - discount + added_tax)
+    total = money(subtotal - discount + added_tax)
+    if tax > MAX_ORDER_MONEY or total > MAX_ORDER_MONEY:
+        raise ValueError("Cart tax or total exceeds the maximum supported order amount.")
+    return lines, money(subtotal), discount, money(tax), total
 
 
 @transaction.atomic
