@@ -440,20 +440,49 @@ export function deleteUser2(id) {
     return apiJson(`/api/users/${id}/`, { method: "DELETE" });
 }
 
-export function getRoles(filters = {}) {
-    return apiList(`/api/roles/${buildQuery({ page: filters.page, page_size: filters.page_size, search: filters.search })}`);
+/**
+ * Tenant-safe role governance. The active tenant is derived by the backend
+ * from the authenticated principal; clients must not submit tenant IDs.
+ */
+export async function getRoles(filters = {}) {
+    const response = await apiList("/api/rbac/governance/roles/");
+    const needle = String(filters.search || "").trim().toLowerCase();
+    const filtered = needle
+        ? response.results.filter((role) =>
+            [role.label, role.key, role.description]
+                .some((value) => String(value || "").toLowerCase().includes(needle)))
+        : response.results;
+    const pageSize = Math.max(1, Number(filters.page_size) || 10);
+    const page = Math.max(1, Number(filters.page) || 1);
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    return {
+        ...response,
+        count: filtered.length,
+        active_count: filtered.filter((role) => role.is_active).length,
+        page,
+        total_pages: totalPages,
+        has_next: page < totalPages,
+        has_previous: page > 1,
+        next: page < totalPages ? "next" : null,
+        previous: page > 1 ? "prev" : null,
+        results: filtered.slice((page - 1) * pageSize, page * pageSize)
+    };
+}
+
+export function getGovernancePermissions() {
+    return apiList("/api/rbac/governance/permissions/");
 }
 
 export function createRole(data) {
-    return apiJson("/api/roles/", { method: "POST", body: JSON.stringify(data) });
+    return apiJson("/api/rbac/governance/roles/", { method: "POST", body: JSON.stringify(data) });
 }
 
 export function updateRole(id, data) {
-    return apiJson(`/api/roles/${id}/`, { method: "PATCH", body: JSON.stringify(data) });
+    return apiJson(`/api/rbac/governance/roles/${id}/`, { method: "PATCH", body: JSON.stringify(data) });
 }
 
 export function deleteRole(id) {
-    return apiJson(`/api/roles/${id}/`, { method: "DELETE" });
+    return apiJson(`/api/rbac/governance/roles/${id}/`, { method: "DELETE" });
 }
 
 export function getTaxes(filters = {}) {
