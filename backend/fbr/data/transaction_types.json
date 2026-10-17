@@ -1,0 +1,198 @@
+[
+ {
+  "code": "T1000017",
+  "description": "Goods"
+ },
+ {
+  "code": "T1000018",
+  "description": "Services"
+ },
+ {
+  "code": "T1000019",
+  "description": "Special Procdeure Goods"
+ },
+ {
+  "code": "T1000020",
+  "description": "Goods at 50% Exemption (KPK)"
+ },
+ {
+  "code": "T1000021",
+  "description": "Goods (FED in ST Mode)"
+ },
+ {
+  "code": "T1000022",
+  "description": "Services (FED in ST Mode)"
+ },
+ {
+  "code": "T1000023",
+  "description": "3rd Schedule Goods"
+ },
+ {
+  "code": "T1000024",
+  "description": "Goods at Reduced Rate"
+ },
+ {
+  "code": "T1000025",
+  "description": "Processing/Conversion of Goods"
+ },
+ {
+  "code": "T1000038",
+  "description": "Cell Phone Activation"
+ },
+ {
+  "code": "T1000041",
+  "description": "Electricity at Specific Rate"
+ },
+ {
+  "code": "T1000042",
+  "description": "Re-rollable Scrap"
+ },
+ {
+  "code": "T1000045",
+  "description": "Non-Taxable Services"
+ },
+ {
+  "code": "T1000048",
+  "description": "Mobile/Satellite Phone U/SRO 280 of 2013"
+ },
+ {
+  "code": "T1000049",
+  "description": "Adjustment Given to Steel Melters under SRO1486 (I)/2012"
+ },
+ {
+  "code": "T1000053",
+  "description": "Mobile/Satellite Phone"
+ },
+ {
+  "code": "T1000054",
+  "description": "SIM Card Activation"
+ },
+ {
+  "code": "T1000056",
+  "description": "Production Capacity"
+ },
+ {
+  "code": "T1000057",
+  "description": "Goods under SRO 649(I)/2013"
+ },
+ {
+  "code": "T1000059",
+  "description": "Palm Fatty Acid Distillate"
+ },
+ {
+  "code": "T1000062",
+  "description": "Electricity Supply to Retailers"
+ },
+ {
+  "code": "T1000075",
+  "description": "Goods at standard rate (default)"
+ },
+ {
+  "code": "T1000076",
+  "description": "Electricity to steel sector"
+ },
+ {
+  "code": "T1000077",
+  "description": "Gas to CNG stations"
+ },
+ {
+  "code": "T1000078",
+  "description": "Rerollable scrap by ship breakers"
+ },
+ {
+  "code": "T1000079",
+  "description": "SIM sale / IMEI activation"
+ },
+ {
+  "code": "T1000080",
+  "description": "Goods at zero-rate"
+ },
+ {
+  "code": "T1000081",
+  "description": "Exempt goods"
+ },
+ {
+  "code": "T1000082",
+  "description": "DTRE goods"
+ },
+ {
+  "code": "T1000083",
+  "description": "Other"
+ },
+ {
+  "code": "T1000084",
+  "description": "Telecommunication services"
+ },
+ {
+  "code": "T1000085",
+  "description": "Petroleum Products"
+ },
+ {
+  "code": "T1000087",
+  "description": "Special procedure cottonseed"
+ },
+ {
+  "code": "T1000090",
+  "description": "Petroleum Products in Quantity"
+ },
+ {
+  "code": "T1000111",
+  "description": "Electricity Supplied to marble/granite industry"
+ },
+ {
+  "code": "T1000113",
+  "description": "Remeltable scrap"
+ },
+ {
+  "code": "T1000115",
+  "description": "Potassium Chlorate"
+ },
+ {
+  "code": "T1000119",
+  "description": "IMS Fiscal Transactions"
+ },
+ {
+  "code": "T1000122",
+  "description": "Mobile Phones"
+ },
+ {
+  "code": "T1000123",
+  "description": "Steel melting and re-rolling"
+ },
+ {
+  "code": "T1000125",
+  "description": "Ship breaking"
+ },
+ {
+  "code": "T1000129",
+  "description": "SIM"
+ },
+ {
+  "code": "T1000130",
+  "description": "Cotton ginners"
+ },
+ {
+  "code": "T1000132",
+  "description": "Electric Vehicle"
+ },
+ {
+  "code": "T1000134",
+  "description": "Cement /Concrete Block"
+ },
+ {
+  "code": "T1000136",
+  "description": "Online Marketplace"
+ },
+ {
+  "code": "T1000138",
+  "description": "Non-Adjustable Supplies"
+ },
+ {
+  "code": "T1000088",
+  "description": "ReRollable Scrap"
+ },
+ {
+  "code": "T1000139",
+  "description": "Goods as per SRO.297(|)/2023 4.2 SRO / SCHEDULE CODES"
+ }
+]

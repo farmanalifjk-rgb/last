@@ -1,0 +1,122 @@
+[
+ {
+  "code": "U1000003",
+  "description": "MT"
+ },
+ {
+  "code": "U1000005",
+  "description": "SET"
+ },
+ {
+  "code": "U1000006",
+  "description": "KWH"
+ },
+ {
+  "code": "U1000008",
+  "description": "40KG"
+ },
+ {
+  "code": "U1000009",
+  "description": "Liter"
+ },
+ {
+  "code": "U1000011",
+  "description": "Sq Yard"
+ },
+ {
+  "code": "U1000013",
+  "description": "KG"
+ },
+ {
+  "code": "U1000046",
+  "description": "MMBTU"
+ },
+ {
+  "code": "U1000048",
+  "description": "Meter"
+ },
+ {
+  "code": "U1000053",
+  "description": "Carat"
+ },
+ {
+  "code": "U1000055",
+  "description": "Cubic Metre"
+ },
+ {
+  "code": "U1000057",
+  "description": "Dozen"
+ },
+ {
+  "code": "U1000059",
+  "description": "Gram"
+ },
+ {
+  "code": "U1000061",
+  "description": "Gallon"
+ },
+ {
+  "code": "U1000063",
+  "description": "Kilogram"
+ },
+ {
+  "code": "U1000065",
+  "description": "Pound"
+ },
+ {
+  "code": "U1000067",
+  "description": "Timber Logs"
+ },
+ {
+  "code": "U1000069",
+  "description": "Pieces"
+ },
+ {
+  "code": "U1000071",
+  "description": "Packs"
+ },
+ {
+  "code": "U1000073",
+  "description": "Pair"
+ },
+ {
+  "code": "U1000075",
+  "description": "Square Foot"
+ },
+ {
+  "code": "U1000077",
+  "description": "Square Metre"
+ },
+ {
+  "code": "U1000079",
+  "description": "Thousand Unit"
+ },
+ {
+  "code": "U1000081",
+  "description": "Mega Watt"
+ },
+ {
+  "code": "U1000083",
+  "description": "Foot"
+ },
+ {
+  "code": "U1000085",
+  "description": "Barrels"
+ },
+ {
+  "code": "U1000087",
+  "description": "Number"
+ },
+ {
+  "code": "U1000004",
+  "description": "Bill of lading"
+ },
+ {
+  "code": "U1000012",
+  "description": "Bag"
+ },
+ {
+  "code": "U1000088",
+  "description": "Others HS CODES - - - - [S-2-(DIALKYL(METHYL,ETHYL,N-PROPYL OR ISOPROPYL)AMINO)ETHYL ]HYDROGEN"
+ }
+]

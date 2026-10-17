@@ -1,0 +1,9 @@
+[
+ {"code": "Sindh", "description": "Sindh"},
+ {"code": "Punjab", "description": "Punjab"},
+ {"code": "Khyber Pakhtunkhwa", "description": "Khyber Pakhtunkhwa"},
+ {"code": "Balochistan", "description": "Balochistan"},
+ {"code": "Islamabad", "description": "Islamabad Capital Territory"},
+ {"code": "Gilgit-Baltistan", "description": "Gilgit-Baltistan"},
+ {"code": "Azad Kashmir", "description": "Azad Jammu & Kashmir"}
+]

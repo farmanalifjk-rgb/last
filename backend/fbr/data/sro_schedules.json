@@ -1,0 +1,350 @@
+[
+ {
+  "code": "S1000012",
+  "description": "FED 1st Schedule"
+ },
+ {
+  "code": "S1000047",
+  "description": "946(I)/2013"
+ },
+ {
+  "code": "S1000055",
+  "description": "572(I)/2014"
+ },
+ {
+  "code": "S1000056",
+  "description": "898(I)/2013"
+ },
+ {
+  "code": "S1000058",
+  "description": "549(I)/2008"
+ },
+ {
+  "code": "S1000059",
+  "description": "646(I)/2005"
+ },
+ {
+  "code": "S1000061",
+  "description": "863(I)/2007"
+ },
+ {
+  "code": "S1000062",
+  "description": "Zero Rated Elec."
+ },
+ {
+  "code": "S1000063",
+  "description": "Zero Rated Gas"
+ },
+ {
+  "code": "S1000065",
+  "description": "Section 4(b)"
+ },
+ {
+  "code": "S1000066",
+  "description": "670(I)/2013"
+ },
+ {
+  "code": "S1000067",
+  "description": "1007(I)/2005"
+ },
+ {
+  "code": "S1000068",
+  "description": "164(I)/2010"
+ },
+ {
+  "code": "S1000069",
+  "description": "172(I)/2006"
+ },
+ {
+  "code": "S1000070",
+  "description": "326(I)/2008"
+ },
+ {
+  "code": "S1000071",
+  "description": "408(I)/2012"
+ },
+ {
+  "code": "S1000072",
+  "description": "539(I)/2008"
+ },
+ {
+  "code": "S1000073",
+  "description": "542(I)/2008"
+ },
+ {
+  "code": "S1000074",
+  "description": "551(I)/2008"
+ },
+ {
+  "code": "S1000076",
+  "description": "76(I)/2008"
+ },
+ {
+  "code": "S1000077",
+  "description": "880(I)/2007"
+ },
+ {
+  "code": "S1000080",
+  "description": "FED 3rd Schedule Table I"
+ },
+ {
+  "code": "S1000081",
+  "description": "FED 3rd Schedule Table II"
+ },
+ {
+  "code": "S1000082",
+  "description": "525(I)/2008"
+ },
+ {
+  "code": "S1000083",
+  "description": "811(I)/2009"
+ },
+ {
+  "code": "S1000084",
+  "description": "802(I)/2009"
+ },
+ {
+  "code": "S1000085",
+  "description": "678(I)/2004"
+ },
+ {
+  "code": "S1000086",
+  "description": "760(I)/2012"
+ },
+ {
+  "code": "S1000087",
+  "description": "499(I)/2013"
+ },
+ {
+  "code": "S1000088",
+  "description": "501(I)/2013"
+ },
+ {
+  "code": "S1000089",
+  "description": "896(I)/2013"
+ },
+ {
+  "code": "S1000090",
+  "description": "DTRE"
+ },
+ {
+  "code": "S1000095",
+  "description": "342(I)/2002"
+ },
+ {
+  "code": "S1000096",
+  "description": "188(I)/2015"
+ },
+ {
+  "code": "S1000100",
+  "description": "213(I)/2013"
+ },
+ {
+  "code": "S1000106",
+  "description": "327(I)/2008"
+ },
+ {
+  "code": "S1000107",
+  "description": "484(I)/2015"
+ },
+ {
+  "code": "S1000118",
+  "description": "1180(I)/2016"
+ },
+ {
+  "code": "S1000119",
+  "description": "21(I)/2017"
+ },
+ {
+  "code": "S1000120",
+  "description": "91(I)/2017"
+ },
+ {
+  "code": "S1000121",
+  "description": "125(I)/2017"
+ },
+ {
+  "code": "S1000122",
+  "description": "223(I)/2017"
+ },
+ {
+  "code": "S1000123",
+  "description": "408(I)/2017"
+ },
+ {
+  "code": "S1000124",
+  "description": "581(I)/2017"
+ },
+ {
+  "code": "S1000126",
+  "description": "608(I)/2012"
+ },
+ {
+  "code": "S1000127",
+  "description": "79(I)/2012"
+ },
+ {
+  "code": "S1000128",
+  "description": "657(I)/2013"
+ },
+ {
+  "code": "S1000130",
+  "description": "398(I)/2015"
+ },
+ {
+  "code": "S1000335",
+  "description": "292(I)/2017"
+ },
+ {
+  "code": "S1000345",
+  "description": "867(I)/2017"
+ },
+ {
+  "code": "S1000346",
+  "description": "757(I)/2017"
+ },
+ {
+  "code": "S1000347",
+  "description": "713(I)/2017"
+ },
+ {
+  "code": "S1000349",
+  "description": "984(I)/2017"
+ },
+ {
+  "code": "S1000350",
+  "description": "641(I)/2017"
+ },
+ {
+  "code": "S1000352",
+  "description": "781(I)2018"
+ },
+ {
+  "code": "S1000353",
+  "description": "777(I)2018"
+ },
+ {
+  "code": "S1000075",
+  "description": "727(I)/2011"
+ },
+ {
+  "code": "S1000359",
+  "description": "1308(I)/2018"
+ },
+ {
+  "code": "S1000360",
+  "description": "1125(I)/2011"
+ },
+ {
+  "code": "S1000362",
+  "description": "253(I)/2019"
+ },
+ {
+  "code": "S1000371",
+  "description": "8th Schedule Table II"
+ },
+ {
+  "code": "S1000383",
+  "description": "6th Schedule Table I"
+ },
+ {
+  "code": "S1000384",
+  "description": "6th Schedule Table II"
+ },
+ {
+  "code": "S1000387",
+  "description": "5th Schedule"
+ },
+ {
+  "code": "S1000390",
+  "description": "495(I)/2016"
+ },
+ {
+  "code": "S1000394",
+  "description": "3rd Schedule"
+ },
+ {
+  "code": "S1000395",
+  "description": "590(I)/2017"
+ },
+ {
+  "code": "S1000396",
+  "description": "Section 49"
+ },
+ {
+  "code": "S1000397",
+  "description": "587(I)/2017"
+ },
+ {
+  "code": "S1000398",
+  "description": "237(I)/2020"
+ },
+ {
+  "code": "S1000399",
+  "description": "6th Schedule Table III"
+ },
+ {
+  "code": "S1000404",
+  "description": "1450(I)/2021"
+ },
+ {
+  "code": "S1000408",
+  "description": "1579(1)/2021"
+ },
+ {
+  "code": "S1000412",
+  "description": "1604(I)/2021"
+ },
+ {
+  "code": "S1000416",
+  "description": "01(I)/2022"
+ },
+ {
+  "code": "S1000420",
+  "description": "88(I)/2022"
+ },
+ {
+  "code": "S1000424",
+  "description": "183(I)/2022"
+ },
+ {
+  "code": "S1000429",
+  "description": "321(I)/2022"
+ },
+ {
+  "code": "S1000431",
+  "description": "ICTO Table II"
+ },
+ {
+  "code": "S1000433",
+  "description": "1212(I)/2018"
+ },
+ {
+  "code": "S1000441",
+  "description": "1636(1)/2022"
+ },
+ {
+  "code": "S1000446",
+  "description": "9th Schedule"
+ },
+ {
+  "code": "S1000449",
+  "description": "297(I)/2023-Table-II"
+ },
+ {
+  "code": "S1000450",
+  "description": "297(I)/2023-Table-I"
+ },
+ {
+  "code": "S1000451",
+  "description": "8th Schedule Table I"
+ },
+ {
+  "code": "S1000358",
+  "description": "1167(I)/2018"
+ },
+ {
+  "code": "S1000452",
+  "description": "ICTO Table I 4.3 UOM CODES"
+ }
+]

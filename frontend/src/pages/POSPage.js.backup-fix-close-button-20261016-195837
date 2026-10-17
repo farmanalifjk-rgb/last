@@ -1,0 +1,645 @@
+﻿import { currencyLabel, formatCurrency } from "../shared/currency.js";
+
+export function POSPage() {
+  return `
+    <div class="h-screen w-full bg-slate-100 overflow-hidden flex flex-col">
+
+      <!-- =========================================================
+           POS HEADER
+      ========================================================== -->
+      <header class="h-[72px] shrink-0 bg-white border-b border-slate-200 px-5 flex items-center justify-between">
+
+        <div class="flex items-center gap-4">
+
+          <button
+            onclick="navigateBackFromPOS()"
+            class="w-10 h-10 rounded-xl border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition"
+            title="Back"
+          >
+            <i data-lucide="arrow-left" class="w-5 h-5"></i>
+          </button>
+
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-lg font-bold text-slate-900">
+                POS Terminal
+              </h1>
+
+              <span class="px-2 py-1 rounded-full bg-lime-100 text-lime-700 text-[11px] font-bold uppercase">
+                Cashier
+              </span>
+            </div>
+
+            <div
+              id="session-box"
+              class="text-xs text-slate-500 mt-0.5"
+            >
+              Loading session...
+            </div>
+          </div>
+
+        </div>
+
+
+        <!-- HEADER ACTIONS -->
+
+        <div class="flex items-center gap-2">
+
+          <button
+            onclick="openParkedSalesModal()"
+            class="h-10 px-4 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition flex items-center gap-2"
+          >
+            <i data-lucide="pause-circle" class="w-4 h-4"></i>
+            Parked
+            <span id="parked-count" class="min-w-[1.5rem] px-1.5 py-0.5 rounded-md bg-slate-100 text-xs text-center">0</span>
+          </button>
+
+            class="h-10 px-4 rounded-xl border border-red-200 bg-white text-red-600 text-sm font-semibold hover:bg-red-50 transition flex items-center gap-2"
+          >
+            <i data-lucide="log-out" class="w-4 h-4"></i>
+            Close
+          </button>
+
+        </div>
+
+      </header>
+
+
+      <!-- =========================================================
+           MAIN POS AREA
+      ========================================================== -->
+
+      <main class="flex-1 min-h-0 flex overflow-hidden">
+
+
+        <!-- =======================================================
+             LEFT: PRODUCT AREA
+        ======================================================== -->
+
+        <section class="flex-1 min-w-0 flex flex-col p-4 gap-4">
+
+
+          <!-- SEARCH / BARCODE -->
+
+          <div class="shrink-0 flex items-center gap-3">
+
+            <div class="relative flex-1">
+
+              <i
+                data-lucide="search"
+                class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400"
+              ></i>
+
+              <input
+                id="product-search"
+                type="text"
+                autocomplete="off"
+                placeholder="Search product or scan barcode..."
+                oninput="searchProducts(this.value)"
+                class="w-full h-14 bg-white border border-slate-200 rounded-2xl pl-12 pr-14 text-base outline-none focus:ring-2 focus:ring-lime-400 focus:border-lime-400 shadow-sm"
+              >
+
+              <span
+                class="absolute right-4 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-slate-400 border border-slate-200 rounded-lg px-2 py-1"
+              >
+                SCAN
+              </span>
+
+            </div>
+
+
+            <!-- NEW ORDER -->
+
+            <button
+              onclick="createOrder()"
+              class="h-14 px-5 shrink-0 bg-lime-400 hover:bg-lime-500 rounded-2xl font-bold text-slate-900 flex items-center gap-2 transition shadow-sm"
+            >
+              <i data-lucide="plus" class="w-5 h-5"></i>
+              New Order
+            </button>
+
+          </div>
+
+
+          <!-- ORDER TABS -->
+
+          <div
+            id="order-tabs"
+            class="shrink-0 flex items-center gap-2 overflow-x-auto"
+          ></div>
+
+
+          <!-- CATEGORIES -->
+
+          <div
+            id="category-bar"
+            class="shrink-0 flex items-center gap-2 overflow-x-auto pb-1"
+          ></div>
+
+
+          <!-- PRODUCTS -->
+
+          <div
+  id="product-grid"
+  class="flex-1 min-h-0 overflow-y-auto pr-1 grid grid-cols-[repeat(auto-fill,minmax(min(100%,220px),1fr))] gap-2 sm:gap-3 content-start"
+></div>
+
+        </section>
+
+
+        <!-- =======================================================
+             RIGHT: CART
+        ======================================================== -->
+
+        <aside
+          class="w-[390px] xl:w-[430px] 2xl:w-[460px] shrink-0 bg-white border-l border-slate-200 flex flex-col"
+        >
+          <!-- CART ITEMS -->
+
+
+          <!-- CART ITEMS -->
+
+          <div
+            id="cart"
+            class="flex-1 min-h-0 overflow-y-auto p-4 bg-slate-50"
+          ></div>
+
+
+          <!-- ORDER NOTE -->
+
+          <div class="px-5 py-3 border-t border-slate-200 shrink-0">
+
+            <textarea
+              id="order-note"
+              oninput="saveNote()"
+              rows="2"
+              placeholder="Order note..."
+              class="w-full resize-none border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-lime-400 bg-white"
+            ></textarea>
+
+          </div>
+
+
+          <!-- TOTALS -->
+
+          <div class="px-5 py-4 border-t border-slate-200 shrink-0 bg-white">
+
+            <div class="flex items-center justify-between text-sm text-slate-500 mb-2">
+              <span>Subtotal</span>
+              <span><span data-currency-label>${currencyLabel()}</span> <span id="subtotal">0.00</span></span>
+            </div>
+
+            <div class="flex items-center justify-between text-sm text-slate-500 mb-2">
+              <span>Discount</span>
+
+              <input
+                id="discount"
+                type="text"
+                inputmode="decimal"
+                autocomplete="off"
+                value="0.00"
+                aria-label="Discount amount for this order"
+                oninput="setCartDiscount(this.value)"
+                class="w-24 h-8 text-right border border-slate-200 rounded-lg px-2 text-sm outline-none focus:ring-1 focus:ring-lime-400 disabled:bg-slate-100 disabled:text-slate-400"
+              >
+            </div>
+
+            <div class="flex items-center justify-between text-sm text-slate-500 mb-3">
+              <span>Tax</span>
+              <span><span data-currency-label>${currencyLabel()}</span> <span id="tax">0.00</span></span>
+            </div>
+
+            <p id="pos-totals-error" class="hidden mb-3 text-xs font-medium text-red-600" role="status" aria-live="polite"></p>
+
+            <div class="border-t border-slate-200 pt-3 flex items-center justify-between">
+
+              <span class="text-base font-bold text-slate-900">
+                Total
+              </span>
+
+              <span class="text-2xl font-black text-slate-900">
+                <span data-currency-label>${currencyLabel()}</span> <span id="total">0.00</span>
+              </span>
+
+            </div>
+
+                        <!-- CHECKOUT -->
+
+            <button
+              onclick="openPaymentModal()"
+              class="mt-2 w-full h-10 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-sm font-bold flex items-center justify-center gap-2 transition"
+            >
+              <span>Proceed to Payment</span>
+              <i data-lucide="arrow-right" class="w-4 h-4"></i>
+            </button>
+
+          </div>
+
+        </aside>
+
+      </main>
+
+
+      <!-- =========================================================
+           SESSION MODAL
+      ========================================================== -->
+
+      <div
+        id="session-modal"
+        class="fixed inset-0 z-[100] hidden items-start justify-center overflow-y-auto bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-4"
+      >
+
+        <div class="my-auto w-full max-w-[440px] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl sm:p-7">
+
+          <div class="w-14 h-14 bg-lime-400 rounded-2xl flex items-center justify-center mb-5">
+            <i data-lucide="banknote" class="w-7 h-7"></i>
+          </div>
+
+          <h2 class="text-2xl font-bold text-slate-900">
+            Start POS Session
+          </h2>
+
+          <p class="text-slate-500 mt-2">
+            Enter the employee and opening cash to start selling.
+          </p>
+
+          <div class="mt-6">
+
+            <label class="text-sm font-semibold text-slate-700">
+              Employee Name
+            </label>
+
+            <input
+              id="session-employee-name"
+              type="text"
+              placeholder="Enter employee name"
+              class="mt-2 w-full border border-slate-200 rounded-2xl px-4 py-4 outline-none focus:ring-2 focus:ring-lime-400"
+            >
+
+          </div>
+
+          <div class="mt-4">
+
+            <label class="text-sm font-semibold text-slate-700">
+              Opening Cash
+            </label>
+
+            <div class="relative mt-2">
+
+              <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-medium" data-currency-label>
+                ${currencyLabel()}
+              </span>
+
+              <input
+                id="session-opening-cash"
+                type="number"
+                min="0"
+                value="0"
+                class="w-full border border-slate-200 rounded-2xl pl-12 pr-4 py-4 outline-none focus:ring-2 focus:ring-lime-400"
+              >
+
+            </div>
+
+          </div>
+
+          <div id="session-warehouse-wrap" class="hidden mt-5">
+            <label for="session-warehouse" class="text-sm font-semibold text-slate-600">
+              Stock location
+            </label>
+            <select
+              id="session-warehouse"
+              class="mt-2 w-full border border-slate-200 rounded-2xl px-4 py-4 outline-none focus:ring-2 focus:ring-lime-400 bg-white"
+            >
+              <option value="">Store stock (no warehouse)</option>
+            </select>
+            <p class="mt-1 text-xs text-slate-400">Sales in this session deduct stock from the selected location.</p>
+          </div>
+
+          <button
+            id="session-start-button"
+            onclick="startPOSSession()"
+            class="mt-6 w-full bg-lime-400 hover:bg-lime-500 rounded-2xl py-4 font-bold flex items-center justify-center gap-3 transition"
+          >
+            Start Session
+            <i data-lucide="arrow-right" class="w-4 h-4"></i>
+          </button>
+
+        </div>
+
+      </div>
+
+
+      <!-- =========================================================
+           PAYMENT MODAL
+      ========================================================== -->
+
+      <div
+        id="payment-modal"
+        class="fixed inset-0 z-[100] hidden items-start justify-center overflow-y-auto bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-4"
+      >
+
+        <div class="my-auto w-full max-w-[440px] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl sm:p-7">
+
+          <div class="flex items-center justify-between">
+
+            <div>
+              <h2 class="text-2xl font-bold text-slate-900">
+                Payment
+              </h2>
+
+              <p class="text-sm text-slate-500 mt-1">
+                Complete the sale
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onclick="closePaymentModal()"
+              aria-label="Close payment"
+              class="w-9 h-9 rounded-xl hover:bg-slate-100 flex items-center justify-center"
+            >
+              <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+
+          </div>
+
+          <div class="mt-6 p-5 bg-slate-900 text-white rounded-2xl flex items-center justify-between">
+
+            <span class="text-slate-300">
+              Total Due
+            </span>
+
+            <span
+              id="payment-total"
+              class="text-2xl font-black"
+            >
+              ${formatCurrency(0)}
+            </span>
+
+          </div>
+
+          <div class="mt-5">
+
+            <label class="text-sm font-semibold text-slate-700">
+              Payment Method
+            </label>
+
+            <select
+              id="payment-method-modal"
+              class="mt-2 w-full border border-slate-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-lime-400 bg-white"
+            >
+              <option value="cash">Cash</option>
+              <option value="card">Card</option>
+              <option value="bank">Bank Transfer</option>
+            </select>
+
+          </div>
+
+          <div class="mt-4">
+
+            <label class="text-sm font-semibold text-slate-700">
+              Amount Received
+            </label>
+
+            <input
+              id="amount-received"
+              type="number"
+              min="0"
+              step="0.01"
+              oninput="calculateChange()"
+              class="mt-2 w-full border border-slate-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-lime-400"
+            >
+
+          </div>
+
+          <div class="mt-4 p-4 rounded-2xl bg-slate-50 flex items-center justify-between">
+
+            <span class="text-sm text-slate-500">
+              Change
+            </span>
+
+            <span
+              id="change-amount"
+              class="font-bold text-slate-900"
+            >
+              ${formatCurrency(0)}
+            </span>
+
+          </div>
+
+          <div class="mt-5 flex gap-3">
+
+            <button
+              onclick="closePaymentModal()"
+              class="flex-1 border border-slate-200 rounded-2xl py-3 font-semibold hover:bg-slate-50 transition"
+            >
+              Cancel
+            </button>
+
+            <button
+              onclick="confirmPayment(event)"
+              class="flex-1 bg-lime-400 hover:bg-lime-500 rounded-2xl py-3 font-bold transition"
+            >
+              Confirm Payment
+            </button>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <!-- =========================================================
+           CUSTOMER MODAL
+      ========================================================== -->
+      <!-- SELECT SAVED CUSTOMER MODAL -->
+      <div
+        id="select-customer-modal"
+        class="fixed inset-0 z-[110] hidden items-start justify-center overflow-y-auto bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-4"
+      >
+        <div class="my-auto flex w-full max-w-xl max-h-[calc(100dvh-2rem)] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+          <div class="flex items-center justify-between border-b border-slate-200 p-4 sm:p-5">
+            <div>
+              <h2 class="text-lg font-bold text-slate-900">Select Customer</h2>
+              <p class="mt-1 text-sm text-slate-500">Choose a saved customer for this sale.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button type="button" onclick="openAddCustomerFromPicker()" class="flex h-10 w-10 items-center justify-center rounded-xl bg-lime-400 text-slate-900 hover:bg-lime-500" title="Add new customer" aria-label="Add new customer">
+                <i data-lucide="plus" class="h-5 w-5"></i>
+              </button>
+              <button type="button" onclick="closeSelectCustomerModal()" class="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50" aria-label="Close customer selection">
+                <i data-lucide="x" class="h-5 w-5"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="border-b border-slate-100 p-4">
+            <div class="relative">
+              <i data-lucide="search" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400"></i>
+              <input id="select-customer-search" type="search" autocomplete="off" placeholder="Search by name, phone, email or code..." class="h-11 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none focus:ring-2 focus:ring-lime-400">
+            </div>
+          </div>
+
+          <div id="select-customer-results" class="min-h-0 flex-1 overflow-y-auto p-3">
+            <p class="p-4 text-center text-sm text-slate-500">Loading customers...</p>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 p-4">
+            <button type="button" onclick="selectWalkInCustomer()" class="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Walk-in customer</button>
+            <button type="button" onclick="closeSelectCustomerModal()" class="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800">Cancel</button>
+          </div>
+        </div>
+      </div>
+      <!-- END SELECT SAVED CUSTOMER MODAL -->
+
+      <div
+        id="customer-modal"
+        class="fixed inset-0 z-[100] hidden items-start justify-center overflow-y-auto bg-black/50 p-3 backdrop-blur-sm sm:items-center sm:p-4"
+      >
+
+        <div class="my-auto w-full max-w-[420px] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-3xl bg-white p-4 shadow-2xl sm:p-7">
+
+          <div class="flex items-center justify-between">
+
+            <h2 class="text-xl font-bold text-slate-900">
+              New Customer
+            </h2>
+
+            <button
+              onclick="closeCustomerModal()"
+              class="w-9 h-9 rounded-xl hover:bg-slate-100 flex items-center justify-center"
+            >
+              <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+
+          </div>
+
+          <div class="mt-5">
+
+            <label class="text-sm font-semibold text-slate-700">
+              Name
+            </label>
+
+            <input
+              id="customer-name"
+              type="text"
+              placeholder="Customer name"
+              class="mt-2 w-full border border-slate-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-lime-400"
+            >
+
+          </div>
+
+          <div class="mt-4">
+
+            <label class="text-sm font-semibold text-slate-700">
+              Phone
+            </label>
+
+            <input
+              id="customer-phone"
+              type="tel"
+              placeholder="Phone number (optional)"
+              class="mt-2 w-full border border-slate-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-lime-400"
+            >
+
+          </div>
+
+          <p id="customer-error" class="hidden mt-4 text-sm text-red-600" role="alert"></p>
+
+          <div class="mt-6 flex gap-3">
+
+            <button
+              type="button"
+              onclick="closeCustomerModal()"
+              class="flex-1 border border-slate-200 rounded-2xl py-3 font-semibold hover:bg-slate-50 transition"
+            >
+              Cancel
+            </button>
+
+            <button
+              type="button"
+              id="customer-save"
+              onclick="createCustomer()"
+              class="flex-1 bg-lime-400 hover:bg-lime-500 rounded-2xl py-3 font-bold transition"
+            >
+              Save Customer
+            </button>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      <!-- NOTIFICATION -->
+<!-- PARK SALE MODAL -->
+<div id="park-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40 p-6">
+  <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+    <h2 class="text-lg font-bold text-slate-900">Park sale</h2>
+    <p class="text-sm text-slate-500 mt-1">The cart is saved for this session and can be resumed later.</p>
+    <label class="block mt-4 text-sm text-slate-600">Label (optional)
+      <input id="park-label" type="text" maxlength="120" class="mt-1 w-full h-10 px-3 rounded-xl border border-slate-200">
+    </label>
+    <p id="park-error" class="hidden mt-3 text-sm text-red-600"></p>
+    <div class="mt-6 flex justify-end gap-3">
+      <button onclick="closeParkModal()" class="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700">Cancel</button>
+      <button id="park-confirm" onclick="confirmPark()" class="h-10 px-4 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800">Park sale</button>
+    </div>
+  </div>
+</div>
+
+<!-- PARKED SALES MODAL -->
+<div id="parked-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40 p-6">
+  <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-bold text-slate-900">Parked sales</h2>
+      <button onclick="closeParkedSalesModal()" class="text-slate-400 hover:text-slate-700 text-sm">Close</button>
+    </div>
+    <div id="parked-list" class="space-y-3 max-h-[60vh] overflow-y-auto"></div>
+  </div>
+</div>
+
+<!-- CASH IN / OUT MODAL -->
+<div id="cash-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40 p-6">
+  <div class="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+    <h2 class="text-lg font-bold text-slate-900">Cash in / out</h2>
+    <p class="text-sm text-slate-500 mt-1">Record cash added to or removed from the drawer.</p>
+    <div class="mt-4 grid grid-cols-2 gap-3">
+      <label class="text-sm text-slate-600">Type
+        <select id="cash-type" class="mt-1 w-full h-10 px-3 rounded-xl border border-slate-200">
+          <option value="in">Cash in</option>
+          <option value="out">Cash out</option>
+        </select>
+      </label>
+      <label class="text-sm text-slate-600">Amount (<span data-currency-label>${currencyLabel()}</span>)
+        <input id="cash-amount" type="number" min="0" step="0.01" class="mt-1 w-full h-10 px-3 rounded-xl border border-slate-200">
+      </label>
+    </div>
+    <label class="block mt-3 text-sm text-slate-600">Reason
+      <input id="cash-reason" type="text" maxlength="255" class="mt-1 w-full h-10 px-3 rounded-xl border border-slate-200">
+    </label>
+    <p id="cash-error" class="hidden mt-3 text-sm text-red-600"></p>
+    <div class="mt-6 flex justify-end gap-3">
+      <button onclick="closeCashModal()" class="h-10 px-4 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700">Cancel</button>
+      <button id="cash-confirm" onclick="submitCashMovement()" class="h-10 px-4 rounded-xl bg-slate-900 text-white text-sm font-semibold hover:bg-slate-800">Record</button>
+    </div>
+  </div>
+</div>
+
+
+      <div
+        id="notification"
+        class="fixed right-5 bottom-5 z-[200]"
+      ></div>
+
+    </div>
+  `;
+}
+
+
+
+
+
+

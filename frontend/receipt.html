@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./style.css">
+    <!-- type="module" so `vite build` bundles this page; classic scripts are skipped and 404 in dist/. -->
+    <script type="module" src="./receipt.js"></script>
+    <title>Receipt</title>
+    <style>
+/* Screen widths of the configured paper. */
+.paper-58mm{ width:58mm; }
+.paper-80mm{ width:80mm; }
+.paper-A5{ width:148mm; }
+.paper-A4{ width:210mm; }
+.receipt-warning{ background:#fef3c7; color:#92400e; padding:8px; text-align:center; font-size:14px; }
+
+@media print{
+    body{ background:white; margin:0; }
+    .screen-only{ display:none !important; }
+    #receipt{ box-shadow:none; margin:0; max-width:100%; }
+    /* Thermal heads print black only: no greys, no backgrounds. */
+    #receipt, #receipt *{ color:#000 !important; }
+    /* Printable width of common thermal rolls (80mm -> 72mm, 58mm -> 48mm). */
+    #receipt.paper-80mm{ width:72mm; padding:0 2mm; font-size:11px; }
+    #receipt.paper-58mm{ width:48mm; padding:0 1mm; font-size:9px; }
+    #receipt.paper-80mm h1, #receipt.paper-58mm h1{ font-size:16px; }
+    #receipt.paper-80mm .text-sm, #receipt.paper-58mm .text-sm{ font-size:inherit; }
+    #receipt.paper-80mm .receipt-logo, #receipt.paper-58mm .receipt-logo{ height:16mm; }
+    #receipt.paper-80mm hr, #receipt.paper-58mm hr{ margin:2mm 0; border-color:#000; }
+    #receipt.paper-A5, #receipt.paper-A4{ width:auto; }
+    /* Keep the FBR number, QR and statement together on one page/cut. */
+    .fbr-block{ break-inside:avoid; page-break-inside:avoid; }
+}
+</style>
+
+</head>
+
+<body class="bg-gray-100">
+
+<div
+id="receipt"
+class="max-w-md mx-auto bg-white shadow mt-8 p-6">
+
+Loading...
+
+</div>
+
+</body>
+
+</html>

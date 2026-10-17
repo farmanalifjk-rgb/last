@@ -1,0 +1,3012 @@
+import { formatCurrency } from "../shared/currency.js";
+import { apiFetch, apiJson, apiList, getApiBaseUrl } from "../services/api.js";
+import { getCachedTenant } from "../services/auth.js";
+import { confirmDialog, openModal } from "../shared/ui.js";
+import { escapeHtml, formatMoney, formatDateTime, safeWebUrl } from "../shared/format.js";
+import { fetchAllProductPages } from "./pos-products.js";
+import { CUSTOMER_RESULT_LIMIT, cartCustomerLabel, moveActive, newCustomerPrefill } from "./pos-customers.js";
+import {
+  cartFingerprint,
+  classifyCheckoutFailure,
+  computeChange,
+  effectiveDiscount,
+  isCartLocked,
+  newCart,
+  parseDiscount,
+  searchValueAfterScan,
+  totalsDiffer,
+} from "./pos-cart.js";
+import { hasPermission } from "../services/auth.js";
+import { createIcons, icons } from "lucide";
+
+const beepSound = new Audio("./sounds/beep.mp3");
+
+let selectedCustomer = null;
+let barcodeBuffer = "";
+let barcodeTimer = null;
+
+let products = [];
+let categories = [];
+
+let activeCategory = null;
+
+let carts = [];
+let activeCartId = null;
+let searchTerm = "";
+let noteTimer = null;
+
+let currentPreview = null;
+let sessionOpen = false;
+let parkedSales = [];
+let checkoutInFlight = false;
+
+/*
+ * Timeouts for cashier requests (ms). Checkout is a non-idempotent write: a
+ * timeout leaves the outcome UNKNOWN, so the cart is locked and only an
+ * identical retry (same Idempotency-Key and body) is offered.
+ */
+const PREVIEW_TIMEOUT_MS = 15000;
+const CHECKOUT_TIMEOUT_MS = 45000;
+const LOOKUP_TIMEOUT_MS = 10000;
+const PREVIEW_DEBOUNCE_MS = 300;
+
+let previewTimer = null;
+let previewSeq = 0;
+// Total the payment modal showed the cashier: { cartId, total, discount }.
+let paymentQuote = null;
+// Search box value when a scanner burst started (restored after the scan).
+let searchValueAtScanStart = null;
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
+/** Render lucide icons inside markup injected after the page render. */
+function refreshIcons() {
+  try {
+    createIcons({ icons });
+  } catch (error) {
+    console.error("ICON RENDER ERROR:", error);
+  }
+}
+
+function canDiscount() {
+  return hasPermission("pos.discount");
+}
+
+/** Refuse edits to a cart whose checkout is in flight or unresolved. */
+function guardCartEditable(cart) {
+  if (!isCartLocked(cart)) {
+    return true;
+  }
+  showNotification(
+    "This sale is waiting for its checkout result. Retry the same sale or discard it first.",
+    "error",
+  );
+  return false;
+}
+
+/** Any cart edit: the old preview and Idempotency-Key no longer describe it. */
+function markCartChanged(cart) {
+  if (cart) {
+    cart.checkoutIdempotencyKey = null;
+    cart.preview = null;
+  }
+  currentPreview = null;
+  paymentQuote = null;
+}
+
+function isAnyPosModalOpen() {
+  const ids = ["payment-modal", "session-modal", "customer-modal", "park-modal", "parked-modal", "cash-modal"];
+  if (ids.some((id) => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains("hidden");
+  })) {
+    return true;
+  }
+  return Boolean(document.querySelector("#ui-modal-root [role='dialog']"));
+}
+
+function getActiveCart() {
+  return carts.find((cart) => cart.id === activeCartId) || null;
+}
+
+// Carts live in memory only: the sidebar's business switcher (full reload)
+// asks how many hold items so it can warn before they are discarded.
+window.posOpenCartCount = () => carts.filter((cart) => cart.items?.length).length;
+
+function getProductPrice(product) {
+  return (
+    parseFloat(
+      product.base_price ?? product.sales_price ?? product.price ?? 0,
+    ) || 0
+  );
+}
+
+function getProductImage(product) {
+  // Only http(s) URLs may reach an <img src>. Relative media paths resolve
+  // against the API origin, which differs from the page when
+  // VITE_API_BASE_URL points at another host.
+  return safeWebUrl(product?.image, getApiBaseUrl());
+}
+
+/*
+ * Sellable stock for the location checkout will decrement. Prefer the
+ * backend's available_quantity (on-hand minus active reservations, scoped to
+ * the cashier session's warehouse); fall back to the legacy aggregate field.
+ */
+function getProductStock(product) {
+  const value = product?.available_quantity ?? product?.stock_quantity ?? 0;
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function formatStock(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function generateIdempotencyKey() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `pos-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function getCartItemsPayload(cart) {
+  return cart.items.map((item) => ({
+    product_id: Number(item.id),
+    quantity: String(item.qty),
+  }));
+}
+
+function getCustomerId(cart) {
+  return cart?.customer_id || cart?.customer || null;
+}
+
+/* =========================================================
+   CATEGORY
+========================================================= */
+
+function filterCategory(categoryId) {
+  activeCategory = categoryId === null ? null : Number(categoryId);
+
+  renderCategories();
+  renderProducts();
+}
+
+function renderCategories() {
+  const container = document.getElementById("category-bar");
+
+  if (!container) {
+    return;
+  }
+
+  container.innerHTML = `
+    <button
+      onclick="filterCategory(null)"
+      class="
+        category-btn
+        flex items-center gap-3
+        px-5 py-3
+        rounded-full
+        border border-slate-300
+        whitespace-nowrap
+        ${activeCategory === null ? "bg-lime-400" : "bg-white"}
+      "
+    >
+      <span>All Products</span>
+
+      <span
+        class="
+          px-2 py-1
+          rounded-full
+          text-xs
+          text-slate-600
+          ${activeCategory === null ? "bg-white" : "bg-slate-100"}
+        "
+      >
+        ${products.length}
+      </span>
+    </button>
+  `;
+
+  categories.forEach((category) => {
+    const productCount = products.filter(
+      (product) =>
+        Number(product.category_id ?? product.category) === Number(category.id),
+    ).length;
+
+    const isActive = Number(activeCategory) === Number(category.id);
+
+    container.innerHTML += `
+      <button
+        onclick="filterCategory(${Number(category.id)})"
+        class="
+          category-btn
+          flex items-center gap-3
+          px-5 py-3
+          rounded-full
+          border border-slate-300
+          whitespace-nowrap
+          ${isActive ? "bg-lime-400" : "bg-white"}
+        "
+      >
+        <span>${escapeHtml(category.name)}</span>
+
+        <span
+          class="
+            px-2 py-1
+            rounded-full
+            text-xs
+            text-slate-600
+            ${isActive ? "bg-white" : "bg-slate-100"}
+          "
+        >
+          ${productCount}
+        </span>
+      </button>
+    `;
+  });
+
+  refreshIcons();
+}
+
+/* =========================================================
+   CATEGORIES
+========================================================= */
+
+// True when the category bar is built from product rows (catalog endpoint refused).
+let categoriesFromProductRows = false;
+
+async function loadCategories() {
+  try {
+    const data = await apiJson("/api/categories/");
+
+    categories = Array.isArray(data) ? data : data.results || [];
+    categoriesFromProductRows = false;
+
+    renderCategories();
+  } catch (error) {
+    // The catalog category endpoint is permission-gated; a cashier may only have POS access.
+    // Fall back to the categories carried by the POS product rows so filtering still works.
+    console.error("LOAD CATEGORIES ERROR:", error);
+    categories = categoriesFromProducts(products);
+    categoriesFromProductRows = true;
+    renderCategories();
+  }
+}
+
+function categoriesFromProducts(rows) {
+  const byId = new Map();
+  for (const product of rows) {
+    const id = product.category_id ?? product.category;
+    if (id === null || id === undefined || id === "" || byId.has(String(id))) continue;
+    byId.set(String(id), { id: Number(id), name: product.category_name || `Category #${id}` });
+  }
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/* =========================================================
+   PRODUCTS
+========================================================= */
+
+/*
+ * /api/pos/products/ is paginated (CustomPagination: page / page_size<=100,
+ * envelope {count, page, total_pages, has_next, next, results}). Load every
+ * page so cashiers can find all active products, de-duplicating by id.
+ */
+async function loadProducts() {
+  const { products: loaded, complete, error } = await fetchAllProductPages(apiJson);
+
+  if (complete || loaded.length || !products.length) {
+    // Never replace a previously loaded full list with an empty failed load.
+    products = loaded;
+  }
+
+  if (categoriesFromProductRows) {
+    categories = categoriesFromProducts(products);
+  }
+  renderProducts();
+  renderCategories();
+
+  if (error) {
+    console.error("LOAD PRODUCTS ERROR:", error);
+
+    showNotification(
+      loaded.length
+        ? `Only ${loaded.length} products loaded: ${error.message || "server error"}`
+        : error.message || "Unable to load products",
+      "error",
+    );
+  }
+}
+
+/* Insert or refresh one product row returned by a server lookup. */
+function upsertProduct(product) {
+  if (!product || product.id === undefined || product.id === null) {
+    return;
+  }
+
+  const index = products.findIndex((item) => Number(item.id) === Number(product.id));
+
+  if (index === -1) {
+    products.push(product);
+  } else {
+    products[index] = { ...products[index], ...product };
+  }
+}
+
+function searchProducts() {
+  const input = document.getElementById("product-search");
+
+  searchTerm = input?.value?.trim().toLowerCase() || "";
+
+  renderProducts();
+}
+
+function renderProducts() {
+  const grid = document.getElementById("product-grid");
+
+  if (!grid) {
+    return;
+  }
+
+  let filteredProducts = products;
+
+  if (activeCategory !== null) {
+    filteredProducts = filteredProducts.filter(
+      (product) =>
+        Number(product.category_id ?? product.category) ===
+        Number(activeCategory),
+    );
+  }
+
+  if (searchTerm) {
+    filteredProducts = filteredProducts.filter((product) => {
+      const name = String(product.name || "").toLowerCase();
+
+      const sku = String(product.sku || "").toLowerCase();
+
+      const barcode = String(product.barcode || "").toLowerCase();
+
+      return (
+        name.includes(searchTerm) ||
+        sku.includes(searchTerm) ||
+        barcode.includes(searchTerm)
+      );
+    });
+  }
+
+  grid.innerHTML = "";
+
+  if (!filteredProducts.length) {
+    grid.innerHTML = `
+      <div class="col-span-full flex items-center justify-center py-16">
+        <div class="text-center text-slate-400">
+          <p class="font-medium">
+            No products found
+          </p>
+
+          <p class="text-sm mt-1">
+            Try another search or category.
+          </p>
+        </div>
+      </div>
+    `;
+
+    return;
+  }
+
+  // Build once and assign once: appending to innerHTML per card re-parses the
+  // whole grid each time, which is quadratic for a full multi-page catalogue.
+  const cards = [];
+
+  filteredProducts.forEach((product) => {
+    const imageSrc = getProductImage(product);
+
+    const price = getProductPrice(product);
+
+    const stock = getProductStock(product);
+
+    cards.push(`
+      <div
+        class="
+          bg-white
+          border border-slate-200
+          rounded-2xl
+          flex flex-col
+          min-h-[340px]
+          transition duration-200
+          hover:shadow-lg
+          hover:-translate-y-1
+        "
+      >
+        <div
+          class="
+            relative
+            h-40 sm:h-44 lg:h-52
+            rounded-t-2xl
+            bg-slate-100
+            overflow-hidden
+            flex items-center justify-center
+          "
+        >
+          <span
+            class="
+              absolute
+              top-0 left-0
+              bg-slate-900
+              text-white
+              text-xs
+              px-3 py-2
+              rounded-br-xl
+            "
+          >
+            ${escapeHtml(formatStock(stock))} Stock
+          </span>
+
+          ${
+            imageSrc
+              ? `
+                <img
+                  src="${escapeHtml(imageSrc)}"
+                  alt="${escapeHtml(product.name)}"
+                  class="w-full h-full object-cover"
+                >
+              `
+              : `
+                <div class="text-slate-400 text-sm">
+                  No Image
+                </div>
+              `
+          }
+        </div>
+
+        <div class="flex flex-col flex-1 p-3 sm:p-4">
+          <h2
+            class="
+              font-semibold
+              text-slate-900
+              text-sm sm:text-base
+            "
+          >
+            ${escapeHtml(product.name)}
+          </h2>
+
+          <p
+            class="
+              text-sm
+              text-slate-500
+              mt-1 sm:mt-2
+              line-clamp-2
+              min-h-[40px]
+            "
+          >
+            ${escapeHtml(product.description || "Product available in store")}
+          </p>
+
+          <p
+            class="
+              font-bold
+              text-base sm:text-lg
+              text-slate-900
+              mt-2 sm:mt-3
+            "
+          >
+            ${formatCurrency(price)}
+          </p>
+
+          <button
+            onclick="addToCart(${Number(product.id)})"
+            aria-label="Add ${escapeHtml(product.name)} to cart"
+            class="
+              mt-2 sm:mt-3
+              w-full
+              border border-slate-300
+              rounded-full
+              py-2 sm:py-3
+              flex items-center
+              justify-center
+              gap-2
+              font-medium
+              hover:bg-lime-400
+              hover:border-lime-400
+              transition
+            "
+          >
+            <i
+              data-lucide="plus"
+              class="w-5 h-5"
+            ></i>
+
+            Add to Cart
+          </button>
+        </div>
+      </div>
+    `);
+  });
+
+  grid.innerHTML = cards.join("");
+
+  refreshIcons();
+}
+
+/* =========================================================
+   LOCAL CART
+========================================================= */
+
+function createOrder() {
+  if (!sessionOpen) {
+    showNotification("Open a cash session first", "error");
+
+    showOpenSessionModal();
+    return;
+  }
+
+  const id = Date.now() + Math.floor(Math.random() * 1000);
+
+  const order = newCart({ id, name: nextOrderName() });
+
+  carts.push(order);
+
+  activeCartId = id;
+  currentPreview = null;
+  paymentQuote = null;
+
+  renderTabs();
+  renderCart();
+  updateCustomerDropdown();
+}
+
+/** "Order N" that is not already used by an open tab. */
+function nextOrderName() {
+  const used = new Set(carts.map((cart) => cart.name));
+  let index = carts.length + 1;
+  while (used.has(`Order ${index}`)) {
+    index += 1;
+  }
+  return `Order ${index}`;
+}
+
+function renderTabs() {
+  const tabs = document.getElementById("order-tabs");
+
+  if (!tabs) {
+    return;
+  }
+
+  tabs.innerHTML = "";
+
+  carts.forEach((order) => {
+    const isActive = order.id === activeCartId;
+
+    tabs.innerHTML += `
+      <button
+        onclick="switchOrder(${Number(order.id)})"
+        class="
+          px-4 py-2
+          rounded-full
+          text-sm
+          font-medium
+          whitespace-nowrap
+          transition
+          ${
+            isActive
+              ? "bg-lime-400 border border-lime-400"
+              : "bg-white border border-slate-200 hover:bg-slate-50"
+          }
+        "
+      >
+        ${escapeHtml(order.name)}
+      </button>
+    `;
+  });
+}
+
+function switchOrder(id) {
+  activeCartId = Number(id);
+
+  currentPreview = getActiveCart()?.preview || null;
+  paymentQuote = null;
+
+  renderTabs();
+  renderCart();
+  updateCustomerDropdown();
+}
+
+/* =========================================================
+   ADD / REMOVE / QUANTITY
+========================================================= */
+
+function addToCart(productId) {
+  let cart = getActiveCart();
+
+  if (!cart) {
+    showNotification("Create a new order first", "error");
+
+    return false;
+  }
+
+  if (!guardCartEditable(cart)) {
+    return false;
+  }
+
+  const product = products.find(
+    (item) => Number(item.id) === Number(productId),
+  );
+
+  if (!product) {
+    showNotification("Product not found", "error");
+
+    return false;
+  }
+
+  const existing = cart.items.find(
+    (item) => Number(item.id) === Number(productId),
+  );
+
+  if (existing) {
+    existing.qty = Number(existing.qty) + 1;
+  } else {
+    cart.items.push({
+      id: product.id,
+      name: product.name,
+      price: getProductPrice(product),
+      qty: 1,
+      image: product.image,
+      stock_quantity: getProductStock(product),
+      sku: product.sku,
+      barcode: product.barcode,
+    });
+  }
+
+  markCartChanged(cart);
+
+  renderCart();
+
+  return true;
+}
+
+function increaseQty(productId) {
+  const cart = getActiveCart();
+
+  if (!cart || !guardCartEditable(cart)) {
+    return;
+  }
+
+  const item = cart.items.find((row) => Number(row.id) === Number(productId));
+
+  if (!item) {
+    return;
+  }
+
+  item.qty = Number(item.qty) + 1;
+
+  markCartChanged(cart);
+
+  renderCart();
+}
+
+function decreaseQty(productId) {
+  const cart = getActiveCart();
+
+  if (!cart || !guardCartEditable(cart)) {
+    return;
+  }
+
+  const item = cart.items.find((row) => Number(row.id) === Number(productId));
+
+  if (!item) {
+    return;
+  }
+
+  item.qty = Number(item.qty) - 1;
+
+  if (item.qty <= 0) {
+    cart.items = cart.items.filter(
+      (row) => Number(row.id) !== Number(productId),
+    );
+  }
+
+  markCartChanged(cart);
+
+  renderCart();
+}
+
+function removeItem(productId) {
+  const cart = getActiveCart();
+
+  if (!cart || !guardCartEditable(cart)) {
+    return;
+  }
+
+  cart.items = cart.items.filter((row) => Number(row.id) !== Number(productId));
+
+  markCartChanged(cart);
+
+  renderCart();
+}
+
+/* =========================================================
+   CART RENDER
+========================================================= */
+
+function renderCart() {
+  const cartDiv = document.getElementById("cart");
+
+  if (!cartDiv) {
+    return;
+  }
+
+  const activeCart = getActiveCart();
+
+  if (!activeCart) {
+    cartDiv.innerHTML = `
+      <div
+        class="
+          h-full
+          flex flex-col
+          items-center
+          justify-center
+          text-gray-400
+        "
+      >
+        <i
+          data-lucide="shopping-cart"
+          class="w-10 h-10 mb-3"
+        ></i>
+
+        <p class="font-medium">
+          Start a new order
+        </p>
+      </div>
+    `;
+
+    setCartTotals(0);
+    return;
+  }
+
+  const cart = activeCart.items;
+
+  if (!cart.length) {
+    cartDiv.innerHTML = `
+      <div
+        class="
+          h-full
+          flex flex-col
+          items-center
+          justify-center
+          text-gray-400
+          py-12
+        "
+      >
+        <i
+          data-lucide="shopping-bag"
+          class="w-10 h-10 mb-3"
+        ></i>
+
+        <p class="font-medium">
+          Cart is empty
+        </p>
+
+        <p class="text-sm mt-1">
+          Add products to get started
+        </p>
+      </div>
+    `;
+
+    setCartTotals(0);
+    return;
+  }
+
+  let subtotal = 0;
+
+  cartDiv.innerHTML = pendingCheckoutBanner(activeCart);
+
+  cart.forEach((item) => {
+    const lineTotal = Number(item.price) * Number(item.qty);
+
+    subtotal += lineTotal;
+
+    const imageSrc = getProductImage(item);
+
+    cartDiv.innerHTML += `
+      <div
+        class="
+          border border-slate-200
+          rounded-xl
+          p-2
+          flex gap-2
+          bg-white
+          mb-2
+          min-w-0
+          min-h-[104px]
+        "
+      >
+        <div
+          class="
+            w-16 h-16
+            shrink-0
+            bg-slate-100
+            rounded-xl
+            overflow-hidden
+            flex items-center
+            justify-center
+          "
+        >
+          ${
+            imageSrc
+              ? `
+                <img
+                  src="${escapeHtml(imageSrc)}"
+                  alt="${escapeHtml(item.name)}"
+                  class="w-full h-full object-contain p-1"
+                >
+              `
+              : `
+                <i
+                  data-lucide="package"
+                  class="w-8 h-8 text-slate-400"
+                ></i>
+              `
+          }
+        </div>
+
+        <div class="flex-1 min-w-0 overflow-hidden">
+          <div
+            class="
+              flex items-start
+              justify-between
+              gap-1
+            "
+          >
+            <h3
+              class="
+                font-semibold
+                text-sm
+                leading-tight
+                text-slate-900
+                break-words
+                min-w-0
+                line-clamp-2
+              "
+            >
+              ${escapeHtml(item.name)}
+            </h3>
+
+            <button
+              type="button"
+              onclick="removeItem(${Number(item.id)})"
+              aria-label="Remove ${escapeHtml(item.name)}"
+              title="Remove"
+              class="
+                w-7 h-7
+                shrink-0
+                rounded-full
+                bg-red-500
+                text-white
+                flex items-center
+                justify-center
+                hover:bg-red-600
+                transition
+              "
+            >
+              <i
+                data-lucide="trash-2"
+                class="w-3 h-3"
+              ></i>
+            </button>
+          </div>
+
+          <div
+            class="
+              flex flex-wrap items-center
+              justify-between
+              mt-3
+              gap-2
+            "
+          >
+            <div
+              class="
+                flex items-center
+                gap-2
+                shrink-0
+              "
+            >
+              <button
+                type="button"
+                onclick="decreaseQty(${Number(item.id)})"
+                aria-label="Decrease quantity of ${escapeHtml(item.name)}"
+                title="Decrease quantity"
+                class="
+                  w-5 h-5
+                  rounded-full
+                  border border-slate-300
+                  flex items-center
+                  justify-center
+                  hover:bg-slate-100
+                "
+              >
+                <i
+                  data-lucide="minus"
+                  class="w-4 h-4"
+                ></i>
+              </button>
+
+              <span class="font-semibold text-sm">
+                ${escapeHtml(formatStock(Number(item.qty)))}
+              </span>
+
+              <button
+                type="button"
+                onclick="increaseQty(${Number(item.id)})"
+                aria-label="Increase quantity of ${escapeHtml(item.name)}"
+                title="Increase quantity"
+                class="
+                  w-5 h-5
+                  rounded-full
+                  bg-lime-400
+                  flex items-center
+                  justify-center
+                  hover:bg-lime-500
+                "
+              >
+                <i
+                  data-lucide="plus"
+                  class="w-4 h-4"
+                ></i>
+              </button>
+            </div>
+
+            <div
+              class="
+                flex items-center
+                gap-1
+                min-w-0
+                max-w-full
+              "
+            >
+              <span class="text-slate-500">
+                Total
+              </span>
+
+              <span
+                class="
+                  font-semibold
+                  text-sm
+                  text-slate-900
+                  break-all
+                "
+              >
+                ${formatCurrency(lineTotal)}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  refreshIcons();
+
+  setCartTotals(subtotal);
+}
+
+/* =========================================================
+   TOTALS
+========================================================= */
+
+function setTotalsText({ subtotal, tax, total }) {
+  const subtotalEl = document.getElementById("subtotal");
+  const taxEl = document.getElementById("tax");
+  const totalEl = document.getElementById("total");
+
+  if (subtotalEl) subtotalEl.innerText = subtotal;
+  if (taxEl) taxEl.innerText = tax;
+  if (totalEl) totalEl.innerText = total;
+}
+
+function setTotalsMessage(message) {
+  const box = document.getElementById("pos-totals-error");
+
+  if (!box) {
+    return;
+  }
+
+  box.textContent = message || "";
+  box.classList.toggle("hidden", !message);
+}
+
+/** Show the active cart's discount; disable it without permission or while locked. */
+function syncDiscountInput(cart) {
+  const input = document.getElementById("discount");
+
+  if (!input) {
+    return;
+  }
+
+  const allowed = canDiscount();
+  const value = cart && allowed ? String(cart.discount ?? "0.00") : "0.00";
+
+  if (input.value !== value) {
+    input.value = value;
+  }
+
+  input.disabled = !cart || !allowed || isCartLocked(cart);
+  input.title = allowed ? "" : "Your role does not allow discounts.";
+}
+
+function showPreviewTotals(data) {
+  setTotalsText({
+    subtotal: formatMoney(data.subtotal),
+    tax: formatMoney(data.tax),
+    total: formatMoney(data.total),
+  });
+}
+
+/*
+ * Totals panel. Tax and total ALWAYS come from the server preview
+ * (/api/pos/preview/): until it answers they show "ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦", never a guessed rate.
+ */
+function setCartTotals(subtotal) {
+  const cart = getActiveCart();
+
+  syncDiscountInput(cart);
+
+  if (!cart || !cart.items.length) {
+    setTotalsMessage("");
+    setTotalsText({ subtotal: formatMoney(0), tax: formatMoney(0), total: formatMoney(0) });
+    return;
+  }
+
+  const discountCheck = parseDiscount(cart.discount);
+
+  if (canDiscount() && !discountCheck.ok) {
+    setTotalsMessage(discountCheck.message);
+  } else {
+    setTotalsMessage("");
+  }
+
+  const fingerprint = cartFingerprint(cart, effectiveDiscount(cart, canDiscount()));
+
+  if (cart.preview && cart.previewFingerprint === fingerprint) {
+    showPreviewTotals(cart.preview);
+    return;
+  }
+
+  setTotalsText({ subtotal: formatMoney(subtotal), tax: "ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦", total: "ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦" });
+  schedulePreview();
+}
+
+function schedulePreview() {
+  clearTimeout(previewTimer);
+
+  previewTimer = setTimeout(() => {
+    previewTimer = null;
+    previewCurrentCart({ quiet: true });
+  }, PREVIEW_DEBOUNCE_MS);
+}
+
+/* =========================================================
+   CANONICAL PREVIEW
+========================================================= */
+
+/**
+ * Ask the server for authoritative prices, discount allocation, tax and total.
+ * `quiet` previews (typing, scanning) report failures inline only; explicit
+ * ones (payment, checkout) also raise a notification.
+ * Responses for a cart that changed meanwhile are discarded.
+ */
+async function previewCurrentCart({ quiet = false } = {}) {
+  const cart = getActiveCart();
+
+  if (!cart || !cart.items.length) {
+    return null;
+  }
+
+  const discount = effectiveDiscount(cart, canDiscount());
+  const fingerprint = cartFingerprint(cart, discount);
+  const isCurrent = () =>
+    getActiveCart() === cart &&
+    cartFingerprint(cart, effectiveDiscount(cart, canDiscount())) === fingerprint;
+
+  try {
+    const data = await apiJson("/api/pos/preview/", {
+      method: "POST",
+      timeoutMs: PREVIEW_TIMEOUT_MS,
+      body: JSON.stringify({
+        items: getCartItemsPayload(cart),
+
+        customer_id: getCustomerId(cart),
+
+        discount,
+      }),
+    });
+
+    if (!isCurrent()) {
+      if (!quiet) {
+        showNotification("The cart changed while calculating. Please try again.", "error");
+      }
+      return null;
+    }
+
+    cart.preview = data;
+    cart.previewFingerprint = fingerprint;
+    currentPreview = data;
+
+    showPreviewTotals(data);
+
+    if (!(canDiscount() && !parseDiscount(cart.discount).ok)) {
+      setTotalsMessage("");
+    }
+
+    return data;
+  } catch (error) {
+    console.error("PREVIEW ERROR:", error);
+
+    const message = error.message || "Unable to calculate order total";
+
+    if (isCurrent()) {
+      setTotalsText({
+        subtotal: document.getElementById("subtotal")?.innerText || formatMoney(0),
+        tax: "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â",
+        total: "ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â",
+      });
+      setTotalsMessage(`Total not available: ${message}`);
+    }
+
+    if (!quiet) {
+      showNotification(message, "error");
+    }
+
+    return null;
+  }
+}
+
+/** Store a new cart discount typed by the cashier (per cart, never global). */
+function setCartDiscount(value) {
+  const cart = getActiveCart();
+
+  if (!cart) {
+    syncDiscountInput(null);
+    return;
+  }
+
+  if (!canDiscount()) {
+    cart.discount = "0.00";
+    syncDiscountInput(cart);
+    return;
+  }
+
+  if (!guardCartEditable(cart)) {
+    syncDiscountInput(cart);
+    return;
+  }
+
+  cart.discount = String(value ?? "");
+  markCartChanged(cart);
+  renderCart();
+}
+
+/** Warning shown in the cart when a checkout attempt got no definitive answer. */
+function pendingCheckoutBanner(cart) {
+  if (cart?.pendingCheckout?.state !== "unknown") {
+    return "";
+  }
+
+  return `
+    <div role="alert" class="mb-3 rounded-2xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+      <p class="font-semibold">Checkout result unknown</p>
+      <p class="mt-1">The server did not answer in time, so this sale may already be saved. ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œRetry same saleÃƒÂ¢Ã¢â€šÂ¬Ã‚Â sends the identical request: if the sale was saved it is shown again, otherwise it is recorded once. The cart is locked until then.</p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button type="button" onclick="retryPendingCheckout()"
+          class="h-9 rounded-xl bg-slate-900 px-4 text-sm font-semibold text-white hover:bg-slate-800">Retry same sale</button>
+        <button type="button" onclick="discardPendingCheckout()"
+          class="h-9 rounded-xl border border-amber-300 bg-white px-4 text-sm font-semibold text-amber-900 hover:bg-amber-100">Discard cart</button>
+      </div>
+    </div>`;
+}
+
+/* =========================================================
+   CHECKOUT
+========================================================= */
+
+async function checkout(paymentMethod, amountReceived) {
+  const cart = getActiveCart();
+
+  if (!cart) {
+    showNotification("Create an order first", "error");
+
+    return false;
+  }
+
+  if (!cart.items.length) {
+    showNotification("Add items to the cart first", "error");
+
+    return false;
+  }
+
+  /*
+   * An earlier attempt has no definitive answer: only the identical request
+   * (same Idempotency-Key and body) may be sent, never a re-priced one.
+   */
+  if (isCartLocked(cart)) {
+    return sendCheckout(cart);
+  }
+
+  const discountCheck = parseDiscount(cart.discount);
+
+  if (canDiscount() && !discountCheck.ok) {
+    showNotification(discountCheck.message, "error");
+
+    return false;
+  }
+
+  /*
+   * Get authoritative backend pricing/tax.
+   */
+  const preview = await previewCurrentCart();
+
+  if (!preview) {
+    return false;
+  }
+
+  const total = parseFloat(preview.total || 0);
+
+  /*
+   * The customer was told the total shown in the payment window. If the
+   * server now computes a different one (price change, cart edit), stop and
+   * show the new amount instead of silently charging it.
+   */
+  if (paymentQuote && paymentQuote.cartId === cart.id && totalsDiffer(paymentQuote.total, total)) {
+    const previous = paymentQuote.total;
+
+    setPaymentQuote(cart, preview);
+
+    showNotification(
+      `The total changed from ${formatCurrency(previous)} to ${formatCurrency(total)}. Check the amount and confirm again.`,
+      "error",
+    );
+
+    return false;
+  }
+
+  const method = paymentMethod || "cash";
+
+  const received = parseFloat(amountReceived || 0);
+
+  if (method === "cash") {
+    if (computeChange(total, received) < 0) {
+      showNotification(
+        `Insufficient cash. Required ${formatCurrency(total)}`,
+        "error",
+      );
+
+      return false;
+    }
+  }
+
+  /*
+   * Card / other electronic tenders
+   * should settle exactly the invoice total.
+   *
+   * Cash can exceed the total because
+   * the backend calculates change.
+   */
+  const tenderAmount = method === "cash" ? received : total;
+
+  if (!cart.checkoutIdempotencyKey) {
+    cart.checkoutIdempotencyKey = generateIdempotencyKey();
+  }
+
+  /*
+   * Freeze the exact request. From here until a definitive answer the cart
+   * is locked, so a retry can only ever resend these same bytes.
+   */
+  cart.pendingCheckout = {
+    state: "in_flight",
+    key: cart.checkoutIdempotencyKey,
+    body: JSON.stringify({
+      items: getCartItemsPayload(cart),
+
+      tenders: [
+        {
+          tender_type: method,
+          amount: tenderAmount.toFixed(2),
+        },
+      ],
+
+      customer_id: getCustomerId(cart),
+
+      discount: parseFloat(preview.discount || 0).toFixed(2),
+    }),
+  };
+
+  return sendCheckout(cart);
+}
+
+/** POST the cart's frozen checkout request and settle the outcome. */
+async function sendCheckout(cart) {
+  const pending = cart.pendingCheckout;
+
+  if (!pending) {
+    return false;
+  }
+
+  pending.state = "in_flight";
+  syncDiscountInput(cart);
+
+  let data;
+
+  try {
+    data = await apiJson("/api/pos/checkout/", {
+      method: "POST",
+      timeoutMs: CHECKOUT_TIMEOUT_MS,
+      headers: {
+        "Idempotency-Key": pending.key,
+      },
+      body: pending.body,
+    });
+  } catch (error) {
+    console.error("CHECKOUT ERROR:", error);
+
+    if (classifyCheckoutFailure(error) === "rejected") {
+      // A definitive refusal: nothing was recorded, the cart is editable again.
+      cart.pendingCheckout = null;
+
+      if (getActiveCart() === cart) {
+        renderCart();
+      }
+
+      showNotification(error.message || "Unable to complete checkout", "error");
+
+      return false;
+    }
+
+    pending.state = "unknown";
+
+    closePaymentModal();
+
+    if (getActiveCart() === cart) {
+      renderCart();
+    }
+
+    showNotification(
+      "No answer from the server ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“ the sale may already be saved. Use ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œRetry same saleÃƒÂ¢Ã¢â€šÂ¬Ã‚Â; it will not be recorded twice.",
+      "error",
+    );
+
+    return false;
+  }
+
+  cart.pendingCheckout = null;
+
+  // The sale is saved. Nothing below may turn it into a reported failure.
+  try {
+    completeCheckout(cart, data);
+  } catch (error) {
+    console.error("POST-CHECKOUT UI ERROR:", error);
+  }
+
+  return true;
+}
+
+function completeCheckout(cart, data) {
+  const order = data.order;
+
+  closePaymentModal();
+  paymentQuote = null;
+
+  showNotification(
+    data.idempotent_replay
+      ? "Checkout restored"
+      : "Order completed successfully",
+    "success",
+  );
+  notifyFiscalStatus(data.fiscal);
+
+  /*
+   * Print the canonical receipt in a hidden frame: no new tab steals focus from
+   * the barcode scanner (cashier audit G9). If the frame reports an error the
+   * cashier gets the open/print fallback; "Last receipt" reprints it.
+   */
+  if (order?.id) {
+    printReceipt(order.id, order.order_number || order.number || "");
+  }
+
+  /*
+   * Reflect the sale in the loaded stock figures so the grid does not keep
+   * showing pre-sale quantities (the server remains authoritative).
+   */
+  for (const item of cart.items) {
+    const product = products.find((row) => Number(row.id) === Number(item.id));
+
+    if (product) {
+      product.available_quantity = String(getProductStock(product) - Number(item.qty || 0));
+    }
+  }
+
+  renderProducts();
+
+  /*
+   * Remove the completed local cart (its discount goes with it).
+   */
+  carts = carts.filter((item) => item.id !== cart.id);
+
+  if (activeCartId === cart.id) {
+    activeCartId = carts.length ? carts[0].id : null;
+  }
+
+  currentPreview = getActiveCart()?.preview || null;
+
+  renderTabs();
+  renderCart();
+  updateCustomerDropdown();
+
+  /*
+   * Automatically create a fresh
+   * cashier order after successful sale.
+   */
+  if (!carts.length) {
+    createOrder();
+  }
+}
+
+async function retryPendingCheckout() {
+  const cart = getActiveCart();
+
+  if (!cart?.pendingCheckout || checkoutInFlight) {
+    return;
+  }
+
+  checkoutInFlight = true;
+
+  try {
+    await sendCheckout(cart);
+  } finally {
+    checkoutInFlight = false;
+  }
+}
+
+async function discardPendingCheckout() {
+  const cart = getActiveCart();
+
+  if (!cart?.pendingCheckout || checkoutInFlight) {
+    return;
+  }
+
+  const confirmed = await confirmDialog({
+    title: "Discard this sale?",
+    message:
+      "The server did not confirm whether this sale was saved. If it was, it stays recorded: check the Orders list before ringing these items up again.",
+    confirmLabel: "Discard cart",
+  });
+
+  if (!confirmed) {
+    return;
+  }
+
+  removeCart(cart.id);
+
+  if (!carts.length) {
+    createOrder();
+  }
+}
+
+/* =========================================================
+   SESSION
+========================================================= */
+
+async function loadSession() {
+  try {
+    const data = await apiJson("/api/pos/sessions/active/");
+
+    const box = document.getElementById("session-box");
+
+    const session = data?.session;
+
+    if (!session) {
+      sessionOpen = false;
+      parkedSales = [];
+      updateParkedCount();
+      if (box) {
+        box.textContent = "No active session";
+      }
+
+      return false;
+    }
+
+    sessionOpen = true;
+
+    if (box) {
+      const employee = session.employee_name
+        ? ` Ãƒâ€šÃ‚Â· ${escapeHtml(session.employee_name)}`
+        : "";
+
+      box.innerHTML = `
+        Session #${escapeHtml(session.id)}
+        ${employee}
+        Ãƒâ€šÃ‚Â· Opening ${escapeHtml(formatCurrency(session.opening_balance))}
+      `;
+    }
+
+    refreshParkedCount();
+
+    return true;
+  } catch (error) {
+    console.error("LOAD SESSION ERROR:", error);
+
+    return false;
+  }
+}
+
+let sessionRequestInFlight = false;
+
+/*
+ * Optional stock location for the session (POST sessions/open/ accepts
+ * warehouse_id). Only shown when the tenant actually has active warehouses;
+ * a failed lookup leaves the picker hidden and the session uses store stock.
+ */
+async function loadSessionWarehouses() {
+  const wrap = document.getElementById("session-warehouse-wrap");
+  const select = document.getElementById("session-warehouse");
+  if (!wrap || !select) return;
+  try {
+    const { results } = await apiList("/api/inventory/warehouses/?page_size=200");
+    const active = results.filter((row) => row && row.id != null && row.is_active !== false);
+    select.querySelectorAll("option[data-warehouse]").forEach((option) => option.remove());
+    for (const warehouse of active) {
+      const option = document.createElement("option");
+      option.value = String(warehouse.id);
+      option.dataset.warehouse = "1";
+      option.textContent = warehouse.code ? `${warehouse.name} (${warehouse.code})` : String(warehouse.name ?? `#${warehouse.id}`);
+      select.appendChild(option);
+    }
+    wrap.classList.toggle("hidden", active.length === 0);
+  } catch (error) {
+    console.warn("Warehouse list unavailable; session will use store stock.", error);
+    wrap.classList.add("hidden");
+  }
+}
+
+async function openSession() {
+  if (sessionRequestInFlight) return;
+  const openingBalanceInput =
+    document.getElementById("session-opening-cash") ||
+    document.getElementById("opening_balance");
+  const openingBalance = openingBalanceInput?.value ?? "0";
+  if (!/^\d+(\.\d{1,2})?$/.test(String(openingBalance).trim() || "0")) {
+    showNotification("Opening cash must be a non-negative amount", "error");
+    return;
+  }
+
+  const warehouseId = document.getElementById("session-warehouse")?.value || "";
+  const startButton = document.getElementById("session-start-button");
+  sessionRequestInFlight = true;
+  if (startButton) startButton.disabled = true;
+
+  try {
+    await apiJson("/api/pos/sessions/open/", {
+      method: "POST",
+      body: JSON.stringify({
+        opening_balance: String(openingBalance).trim() || "0",
+        ...(warehouseId ? { warehouse_id: Number(warehouseId) } : {}),
+      }),
+    });
+
+    hideOpenSessionModal();
+
+    carts = [];
+    activeCartId = null;
+    currentPreview = null;
+
+    await loadSession();
+
+    createOrder();
+
+    showNotification("Cash session opened", "success");
+  } catch (error) {
+    console.error("OPEN SESSION ERROR:", error);
+
+    showNotification(error.message || "Failed to open session", "error");
+  } finally {
+    sessionRequestInFlight = false;
+    if (startButton) startButton.disabled = false;
+  }
+}
+
+async function closeSession() {
+  if (sessionRequestInFlight) return;
+
+  // Local cart tabs are not persisted server-side; closing discards them.
+  const openCarts = carts.filter((cart) => (cart.items || []).length > 0).length;
+  const unresolved = carts.filter((cart) => isCartLocked(cart)).length;
+  const unresolvedNote = unresolved
+    ? ` ${unresolved} of them did not get a checkout answer and may already be saved: retry them first, or check Orders afterwards.`
+    : "";
+  if (openCarts && !(await confirmDialog({
+    title: "Discard open carts?",
+    message: `${openCarts} cart(s) still have items. Closing the session discards them (park a sale first to keep it).${unresolvedNote} Continue?`,
+    confirmLabel: "Discard and continue",
+  }))) {
+    return;
+  }
+
+  // Read the server-calculated expected drawer balance before closing.
+  let expectedCash = null;
+  try {
+    const activeSessionData = await apiJson("/api/pos/sessions/active/");
+    expectedCash = activeSessionData?.session?.expected_cash ?? null;
+  } catch (error) {
+    console.error("Could not load expected closing cash:", error);
+  }
+
+  // The canonical backend requires actual_cash (the counted drawer amount).
+  const actualCash = await openModal({
+    title: "Close session",
+    submitLabel: "Close session",
+    size: "max-w-md",
+    html: `
+      <div class="mb-4 rounded-xl border border-violet-100 bg-violet-50 p-4">
+        <div class="text-sm font-medium text-slate-600">Expected closing cash</div>
+        <div class="mt-1 text-2xl font-bold text-violet-900">${expectedCash != null ? escapeHtml(formatCurrency(expectedCash)) : "Unavailable"}</div>
+        <p class="mt-1 text-xs text-slate-500">Calculated from the active session by the server.</p>
+      </div>
+      <label for="close-actual-cash" class="mb-2 block text-sm font-semibold text-slate-800">Counted closing cash</label>
+      <input id="close-actual-cash" name="actual_cash" type="number" inputmode="decimal" min="0" step="0.01" autocomplete="off" required
+        placeholder="0.00" class="h-11 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm focus:border-violet-400 focus:outline-none focus:ring-2 focus:ring-violet-200">
+      <p class="mt-2 text-xs text-slate-500">Count the drawer and enter the amount. The server calculates the expected cash and difference.</p>`,
+    onSubmit: (form) => {
+      const value = String(form.elements.actual_cash?.value ?? "").trim();
+      if (!/^\d+(\.\d{1,2})?$/.test(value)) {
+        throw new Error("Enter a valid closing cash amount (0 or more, up to 2 decimal places).");
+      }
+      const amount = Number(value);
+      if (!Number.isFinite(amount) || amount < 0) {
+        throw new Error("Closing cash cannot be negative or invalid.");
+      }
+      return amount.toFixed(2);
+    },
+  });
+
+  if (typeof actualCash !== "string") {
+    return;
+  }
+
+  sessionRequestInFlight = true;
+  try {
+    const data = await apiJson("/api/pos/sessions/close/", {
+      method: "POST",
+      body: JSON.stringify({
+        actual_cash: actualCash.trim(),
+      }),
+    });
+
+    // Report exactly what the backend computed; never substitute zeros.
+    const parts = ["Session closed."];
+    if (data?.expected_cash != null) parts.push(`Expected ${formatCurrency(data.expected_cash)}`);
+    if (data?.session?.actual_closing_balance != null) parts.push(`counted ${formatCurrency(data.session.actual_closing_balance)}`);
+    if (data?.difference != null) parts.push(`difference ${formatCurrency(data.difference)}`);
+    showNotification(parts.join(" Ãƒâ€šÃ‚Â· "), "success");
+
+    carts = [];
+    activeCartId = null;
+    currentPreview = null;
+
+    renderTabs();
+    renderCart();
+
+    await loadSession();
+
+    showOpenSessionModal();
+  } catch (error) {
+    console.error("CLOSE SESSION ERROR:", error);
+
+    showNotification(error.message || "Failed to close session", "error");
+  } finally {
+    sessionRequestInFlight = false;
+  }
+}
+
+/* =========================================================
+   BARCODE
+========================================================= */
+
+document.addEventListener("keydown", async (event) => {
+  /*
+   * pos.js is loaded for the whole SPA; only treat keystrokes as scanner
+   * input while the POS product grid is on screen.
+   */
+  if (!document.getElementById("product-grid")) {
+    return;
+  }
+
+  /*
+   * Don't intercept typing in normal
+   * text inputs.
+   */
+  const target = event.target;
+
+  const isTypingField =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement;
+
+  if (isTypingField && target.id !== "product-search") {
+    return;
+  }
+
+  if (event.key === "Enter") {
+    const code = barcodeBuffer.trim();
+    const searchBefore = searchValueAtScanStart;
+    const searchInput =
+      target instanceof HTMLInputElement && target.id === "product-search" ? target : null;
+
+    barcodeBuffer = "";
+    searchValueAtScanStart = null;
+    clearTimeout(barcodeTimer);
+
+    if (!code) {
+      return;
+    }
+
+    /*
+     * A scan while a dialog is open (payment, customer, park...) must not
+     * change the cart behind it, nor "press" the dialog's focused button.
+     */
+    if (isAnyPosModalOpen()) {
+      event.preventDefault();
+      showNotification("Close the open window before scanning.", "error");
+      return;
+    }
+
+    const added = await processBarcode(code);
+
+    /*
+     * The scanner also "typed" the code into the focused search box. After a
+     * successful scan put the box back as it was; after a failed one select
+     * the text so the next scan replaces it instead of appending to it.
+     */
+    if (searchInput) {
+      if (added) {
+        searchInput.value = searchValueAfterScan({ before: searchBefore, current: searchInput.value, code });
+        searchProducts();
+      } else {
+        searchInput.select();
+      }
+    }
+
+    return;
+  }
+
+  if (
+    event.key.length === 1 &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.metaKey
+  ) {
+    if (!barcodeBuffer) {
+      // keydown fires before the character lands in the input.
+      searchValueAtScanStart =
+        target instanceof HTMLInputElement && target.id === "product-search" ? target.value : null;
+    }
+
+    barcodeBuffer += event.key;
+
+    clearTimeout(barcodeTimer);
+
+    barcodeTimer = setTimeout(() => {
+      barcodeBuffer = "";
+      searchValueAtScanStart = null;
+    }, 100);
+  }
+});
+
+/** Look up a scanned code and add it to the active cart. Returns true when added. */
+async function processBarcode(code) {
+  try {
+    const data = await apiJson(
+      `/api/pos/products/?barcode=${encodeURIComponent(code)}`,
+      { timeoutMs: LOOKUP_TIMEOUT_MS },
+    );
+
+    const rows = Array.isArray(data) ? data : data.results || [];
+
+    const product = rows[0];
+
+    if (!product) {
+      showNotification(`No product with barcode ${code}`, "error");
+
+      return false;
+    }
+
+    // The scanned product may be outside the currently loaded list (e.g. it
+    // was created after the POS loaded); keep the server row so it can be sold.
+    upsertProduct(product);
+
+    if (!addToCart(product.id)) {
+      return false;
+    }
+
+    beepSound.play().catch(() => {});
+
+    renderProducts();
+
+    showNotification(`${product.name} added`, "success");
+
+    return true;
+  } catch (error) {
+    console.error("BARCODE ERROR:", error);
+
+    showNotification(error.message || "Product lookup failed", "error");
+
+    return false;
+  }
+}
+
+/* =========================================================
+   CUSTOMERS
+========================================================= */
+
+const customerDirectory = new Map(); // id (string) -> { id, name, phone, ... }
+let customerResults = [];
+let customerActiveIndex = -1;
+let customerSearchSeq = 0;
+let customerSearchTimer = null;
+let creatingCustomer = false;
+
+function rememberCustomers(list) {
+  list.forEach((customer) => customerDirectory.set(String(customer.id), customer));
+}
+
+/** Server-side search: name, phone, email or customer code (max 50 rows). */
+async function fetchCustomers(term = "") {
+  const query = term ? `?search=${encodeURIComponent(term)}` : "";
+  const data = await apiJson(`/api/pos/customers/${query}`);
+  const list = Array.isArray(data) ? data : data.results || [];
+  rememberCustomers(list);
+  return list;
+}
+
+async function loadCustomers() {
+  wireCustomerPicker();
+  try {
+    await fetchCustomers("");
+  } catch (error) {
+    // The picker reports search failures when it is used.
+    console.error("LOAD CUSTOMERS ERROR:", error);
+  }
+  updateCustomerDropdown();
+}
+
+function wireCustomerPicker() {
+  const input = document.getElementById("customer-search");
+  const picker = document.getElementById("customer-picker");
+  if (!input || !picker || input.dataset.wired) return;
+  input.dataset.wired = "1";
+
+  input.addEventListener("input", () => {
+    clearTimeout(customerSearchTimer);
+    customerSearchTimer = setTimeout(() => runCustomerSearch(input.value.trim()), 250);
+  });
+  input.addEventListener("focus", () => runCustomerSearch(input.value.trim()));
+  input.addEventListener("keydown", (event) => {
+    const results = document.getElementById("customer-results");
+    const open = results && !results.classList.contains("hidden");
+    if (event.key === "Escape") {
+      closeCustomerResults();
+      return;
+    }
+    if (!open) {
+      if (event.key === "ArrowDown") runCustomerSearch(input.value.trim());
+      return;
+    }
+    const options = results.querySelectorAll("[data-customer-option]");
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      customerActiveIndex = moveActive(customerActiveIndex, options.length, event.key);
+      highlightCustomerOption(options);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const active = options[customerActiveIndex] || options[0];
+      if (active) chooseCustomerOption(active);
+    }
+  });
+
+  document.getElementById("customer-results")?.addEventListener("mousedown", (event) => {
+    // mousedown (not click) so the input's blur does not close the list first.
+    const option = event.target.closest("[data-customer-option]");
+    if (!option) return;
+    event.preventDefault();
+    chooseCustomerOption(option);
+  });
+  input.addEventListener("blur", () => setTimeout(closeCustomerResults, 150));
+  document.getElementById("customer-clear")?.addEventListener("click", () => assignCustomer(null));
+}
+
+function chooseCustomerOption(option) {
+  if (option.dataset.action === "add") {
+    closeCustomerResults();
+    showCustomerModal(option.dataset.term || "");
+    return;
+  }
+  assignCustomer(option.dataset.customerId || null);
+}
+
+async function runCustomerSearch(term) {
+  const mine = ++customerSearchSeq;
+  const results = document.getElementById("customer-results");
+  if (!results) return;
+  openCustomerResults(`<p class="px-3 py-2 text-sm text-slate-500">SearchingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦</p>`);
+  try {
+    const list = await fetchCustomers(term);
+    if (mine !== customerSearchSeq) return;
+    customerResults = list;
+    renderCustomerResults(term);
+  } catch (error) {
+    if (mine !== customerSearchSeq) return;
+    openCustomerResults(`<p class="px-3 py-2 text-sm text-red-600">${escapeHtml(error?.message || "Customer search failed.")}</p>`);
+  }
+}
+
+function renderCustomerResults(term) {
+  const currentId = getCustomerId(getActiveCart());
+  let index = 0;
+  const option = (id, label, extra = "") => `
+    <button type="button" role="option" id="customer-option-${index++}" data-customer-option data-customer-id="${escapeHtml(id)}" ${extra}
+      aria-selected="${String(String(currentId || "") === String(id))}"
+      class="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100">${label}</button>`;
+  let html = option("", `<span class="font-semibold">Walk-in customer</span>`);
+  html += customerResults
+    .map((customer) => option(customer.id, `<span class="font-medium text-slate-900">${escapeHtml(customer.name)}</span>${customer.phone ? ` <span class="text-slate-500">Ãƒâ€šÃ‚Â· ${escapeHtml(customer.phone)}</span>` : ""}${customer.customer_code ? ` <span class="text-xs text-slate-400">${escapeHtml(customer.customer_code)}</span>` : ""}`))
+    .join("");
+  if (term && !customerResults.length) {
+    html += `<p class="px-3 py-2 text-sm text-slate-500">No customer matches ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ${escapeHtml(term)}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â.</p>`;
+  }
+  if (customerResults.length >= CUSTOMER_RESULT_LIMIT) {
+    html += `<p class="px-3 py-2 text-xs text-slate-400">Showing the first ${CUSTOMER_RESULT_LIMIT}. Type more to narrow the search.</p>`;
+  }
+  html += `<button type="button" role="option" id="customer-option-add" data-customer-option data-action="add" data-term="${escapeHtml(term)}"
+      class="mt-1 w-full rounded-lg border-t border-slate-100 px-3 py-2 text-left text-sm font-semibold text-lime-700 hover:bg-lime-50">
+      + Add ${term ? `ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œ${escapeHtml(term)}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â` : "a new customer"}</button>`;
+  customerActiveIndex = -1;
+  openCustomerResults(html);
+}
+
+function openCustomerResults(html) {
+  const results = document.getElementById("customer-results");
+  const input = document.getElementById("customer-search");
+  if (!results) return;
+  results.innerHTML = html;
+  results.classList.remove("hidden");
+  input?.setAttribute("aria-expanded", "true");
+}
+
+function closeCustomerResults() {
+  const results = document.getElementById("customer-results");
+  results?.classList.add("hidden");
+  document.getElementById("customer-search")?.setAttribute("aria-expanded", "false");
+  customerActiveIndex = -1;
+}
+
+function highlightCustomerOption(options) {
+  options.forEach((element, index) => {
+    const active = index === customerActiveIndex;
+    element.classList.toggle("bg-slate-100", active);
+    if (active) {
+      element.scrollIntoView({ block: "nearest" });
+      document.getElementById("customer-search")?.setAttribute("aria-activedescendant", element.id || "");
+    }
+  });
+}
+
+async function assignCustomer(customerId = null) {
+  const cart = getActiveCart();
+
+  closeCustomerResults();
+  const input = document.getElementById("customer-search");
+  if (input) input.value = "";
+
+  if (!cart) {
+    showNotification("Create or select an order first.", "error");
+    return;
+  }
+
+  if (!guardCartEditable(cart)) {
+    return;
+  }
+
+  const id = customerId ? String(customerId) : null;
+  if (String(getCustomerId(cart) || "") === String(id || "")) {
+    updateCustomerDropdown();
+    return;
+  }
+
+  cart.customer = id;
+  cart.customer_id = id;
+  cart.customer_name = id ? customerDirectory.get(id)?.name || cart.customer_name || "" : "";
+  markCartChanged(cart);
+  selectedCustomer = id;
+
+  updateCustomerDropdown();
+
+  /*
+   * Recalculate authoritative pricing
+   * because customer groups may affect
+   * pricing.
+   */
+  if (cart.items.length) {
+    renderCart();
+    await previewCurrentCart();
+  }
+
+  showNotification(id ? "Customer assigned" : "Walk-in customer selected", "success");
+}
+
+/** Show the active cart's customer (kept name for compatibility with callers). */
+function updateCustomerDropdown() {
+  const cart = getActiveCart();
+  const label = document.getElementById("customer-selected");
+  const clear = document.getElementById("customer-clear");
+  if (label) label.textContent = cartCustomerLabel(cart, customerDirectory);
+  clear?.classList.toggle("hidden", !getCustomerId(cart));
+}
+
+/* =========================================================
+   CUSTOMER MODAL
+========================================================= */
+
+let selectCustomerSearchTimer = null;
+let selectCustomerRequestSeq = 0;
+
+async function openSelectCustomerModal() {
+  const modal = document.getElementById("select-customer-modal");
+  if (!modal) return;
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+
+  const search = document.getElementById("select-customer-search");
+  if (search) search.value = "";
+
+  await loadSelectCustomerResults("");
+  search?.focus();
+}
+
+function closeSelectCustomerModal() {
+  const modal = document.getElementById("select-customer-modal");
+  if (!modal) return;
+
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+
+async function loadSelectCustomerResults(term = "") {
+  const results = document.getElementById("select-customer-results");
+  if (!results) return;
+
+  const requestId = ++selectCustomerRequestSeq;
+  results.innerHTML = '<p class="p-4 text-center text-sm text-slate-500">Loading customers...</p>';
+
+  try {
+    const customers = await fetchCustomers(term);
+    if (requestId !== selectCustomerRequestSeq) return;
+
+    if (!customers.length) {
+      results.innerHTML = `
+        <div class="p-8 text-center">
+          <p class="font-semibold text-slate-700">No customers found</p>
+          <p class="mt-1 text-sm text-slate-500">Try another search or add a new customer.</p>
+          <button type="button" onclick="openAddCustomerFromPicker()" class="mt-4 inline-flex items-center gap-2 rounded-xl bg-lime-400 px-4 py-2.5 text-sm font-semibold text-slate-900 hover:bg-lime-500">
+            <i data-lucide="plus" class="h-4 w-4"></i> Add customer
+          </button>
+        </div>`;
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+
+    results.innerHTML = customers.map((customer) => {
+      const id = String(customer.id);
+      const name = escapeHtml(customer.name || "Unnamed customer");
+      const phone = escapeHtml(customer.phone || "");
+      const email = escapeHtml(customer.email || "");
+      const code = escapeHtml(customer.code || customer.customer_code || "");
+      const details = [phone, email, code].filter(Boolean).join(" Ã‚Â· ");
+
+      return `
+        <button type="button" data-select-customer-id="${escapeHtml(id)}"
+          class="mb-2 flex w-full items-center gap-3 rounded-xl border border-slate-200 p-3 text-left transition hover:border-lime-400 hover:bg-lime-50 focus:outline-none focus:ring-2 focus:ring-lime-400">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+            <i data-lucide="user-round" class="h-5 w-5"></i>
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-sm font-semibold text-slate-900">${name}</span>
+            <span class="mt-1 block break-words text-xs text-slate-500">${details || "No contact details"}</span>
+          </span>
+          <i data-lucide="chevron-right" class="h-4 w-4 shrink-0 text-slate-400"></i>
+        </button>`;
+    }).join("");
+
+    results.querySelectorAll("[data-select-customer-id]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const id = button.dataset.selectCustomerId;
+        closeSelectCustomerModal();
+        await assignCustomer(id);
+      });
+    });
+
+    if (window.lucide) window.lucide.createIcons();
+  } catch (error) {
+    if (requestId !== selectCustomerRequestSeq) return;
+    results.innerHTML = `<p class="p-4 text-center text-sm text-red-600">${escapeHtml(error?.message || "Could not load customers.")}</p>`;
+  }
+}
+
+function openAddCustomerFromPicker() {
+  const search = document.getElementById("select-customer-search");
+  const term = search?.value?.trim() || "";
+
+  closeSelectCustomerModal();
+  showCustomerModal(term);
+}
+
+async function selectWalkInCustomer() {
+  closeSelectCustomerModal();
+  await assignCustomer(null);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const search = document.getElementById("select-customer-search");
+  if (!search || search.dataset.wired) return;
+
+  search.dataset.wired = "1";
+  search.addEventListener("input", () => {
+    clearTimeout(selectCustomerSearchTimer);
+    const term = search.value.trim();
+    selectCustomerSearchTimer = setTimeout(() => loadSelectCustomerResults(term), 250);
+  });
+
+  document.getElementById("select-customer-results")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-select-customer-id]");
+    if (!button) return;
+  });
+
+  document.getElementById("select-customer-modal")?.addEventListener("click", (event) => {
+    if (event.target.id === "select-customer-modal") closeSelectCustomerModal();
+  });
+});
+function showCustomerModal(term = "") {
+  const modal = document.getElementById("customer-modal");
+
+  if (!modal) {
+    return;
+  }
+
+  const prefill = newCustomerPrefill(typeof term === "string" ? term : "");
+  const name = document.getElementById("customer-name");
+  const phone = document.getElementById("customer-phone");
+  if (name) name.value = prefill.name;
+  if (phone) phone.value = prefill.phone;
+  setCustomerError("");
+
+  modal.classList.add("flex");
+  modal.classList.remove("hidden");
+  (prefill.name ? phone : name)?.focus();
+}
+
+function closeCustomerModal() {
+  const modal = document.getElementById("customer-modal");
+
+  if (!modal) {
+    return;
+  }
+
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+
+function setCustomerError(message) {
+  const box = document.getElementById("customer-error");
+  if (!box) return;
+  box.textContent = message;
+  box.classList.toggle("hidden", !message);
+}
+
+/*
+ * Creates the customer through the canonical customers API
+ * (POST /api/customers/, RBAC customers.create - part of the Cashier
+ * template). Name is required; the backend rejects a phone/email already
+ * used in this business. The new customer is assigned to the active order.
+ */
+async function createCustomer() {
+  if (creatingCustomer) return;
+  const name = document.getElementById("customer-name")?.value.trim() || "";
+  const phone = document.getElementById("customer-phone")?.value.trim() || "";
+  if (!name) {
+    setCustomerError("Enter the customer's name.");
+    document.getElementById("customer-name")?.focus();
+    return;
+  }
+
+  const button = document.getElementById("customer-save");
+  creatingCustomer = true;
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+  }
+  setCustomerError("");
+  try {
+    const created = await apiJson("/api/customers/", {
+      method: "POST",
+      // phone/email are required-but-blankable on this serializer (per-tenant
+      // unique constraints), so always send both, blank when not captured.
+      body: JSON.stringify({ name, phone: phone || "", email: "" }),
+    });
+    rememberCustomers([created]);
+    closeCustomerModal();
+    showNotification(`Customer ${created.name} added`, "success");
+    await assignCustomer(String(created.id));
+  } catch (error) {
+    // apiError already folds field errors (e.g. duplicate phone) into the message.
+    setCustomerError(error?.message || "The customer could not be saved.");
+  } finally {
+    creatingCustomer = false;
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  }
+}
+
+/* =========================================================
+   NOTE
+========================================================= */
+
+function saveNote() {
+  clearTimeout(noteTimer);
+
+  /*
+   * Notes are currently browser-cart state.
+   *
+   * The canonical checkout contract shown by
+   * the backend does not accept a note field.
+   *
+   * Do not send notes to a legacy draft endpoint.
+   */
+  noteTimer = setTimeout(() => {
+    const cart = getActiveCart();
+
+    const noteEl = document.getElementById("order-note");
+
+    if (!cart || !noteEl) {
+      return;
+    }
+
+    cart.note = noteEl.value || "";
+  }, 300);
+}
+
+/* =========================================================
+   PAYMENT MODAL
+========================================================= */
+
+async function openPaymentModal() {
+  const cart = getActiveCart();
+
+  if (!cart || !cart.items.length) {
+    showNotification("Add products to the cart first", "error");
+
+    return;
+  }
+
+  if (isCartLocked(cart)) {
+    guardCartEditable(cart);
+
+    return;
+  }
+
+  const discountCheck = parseDiscount(cart.discount);
+
+  if (canDiscount() && !discountCheck.ok) {
+    showNotification(discountCheck.message, "error");
+
+    return;
+  }
+
+  /*
+   * Always get the authoritative
+   * backend total before payment.
+   */
+  const preview = await previewCurrentCart();
+
+  if (!preview) {
+    return;
+  }
+
+  const total = parseFloat(preview.total || 0);
+
+  /*
+   * FBR-integrated tills must record the buyer above the threshold
+   * (S.R.O. 1006(I)/2021). Ask before taking payment; checkout enforces it.
+   */
+  if (preview.buyer_identification_required && !getCustomerId(cart)) {
+    const threshold = preview.buyer_identification_threshold;
+    showNotification(
+      `Sales above ${threshold ? formatCurrency(threshold) : "the FBR limit"} need the buyer's name. Assign a customer first.`,
+      "error",
+    );
+
+    return;
+  }
+
+  const modal = document.getElementById("payment-modal");
+
+  if (!modal) {
+    return;
+  }
+
+  setPaymentQuote(cart, preview);
+
+  const amountReceivedEl = document.getElementById("amount-received");
+
+  if (amountReceivedEl) {
+    amountReceivedEl.value = total.toFixed(2);
+  }
+
+  calculateChange();
+
+  modal.classList.add("flex");
+  modal.classList.remove("hidden");
+
+  refreshIcons();
+}
+
+/** Remember (and display) the total the cashier is about to collect. */
+function setPaymentQuote(cart, preview) {
+  paymentQuote = {
+    cartId: cart.id,
+    total: parseFloat(preview.total || 0),
+    discount: parseFloat(preview.discount || 0),
+  };
+
+  const paymentTotalEl = document.getElementById("payment-total");
+
+  if (paymentTotalEl) {
+    paymentTotalEl.innerText = formatCurrency(paymentQuote.total);
+  }
+
+  calculateChange();
+}
+
+function closePaymentModal() {
+  const modal = document.getElementById("payment-modal");
+
+  paymentQuote = null;
+
+  if (!modal) {
+    return;
+  }
+
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+
+function calculateChange() {
+  const receivedEl = document.getElementById("amount-received");
+
+  const changeEl = document.getElementById("change-amount");
+
+  if (!receivedEl || !changeEl) {
+    return;
+  }
+
+  // The quoted total, never the text of the totals panel.
+  const total = paymentQuote ? paymentQuote.total : parseFloat(getActiveCart()?.preview?.total || 0);
+
+  changeEl.innerText = formatCurrency(computeChange(total, receivedEl.value));
+}
+
+async function confirmPayment(event) {
+  /*
+   * Block double clicks while a checkout request is in flight. The cart's
+   * Idempotency-Key is still the server-side guarantee: a retried request
+   * after a network failure replays the original sale instead of creating
+   * a second one.
+   */
+  if (checkoutInFlight) {
+    return;
+  }
+
+  const paymentMethodEl = document.getElementById("payment-method-modal");
+
+  const amountReceivedEl = document.getElementById("amount-received");
+
+  const paymentMethod = paymentMethodEl?.value || "cash";
+
+  const amountReceived = parseFloat(amountReceivedEl?.value) || 0;
+
+  const button = event?.currentTarget instanceof HTMLButtonElement ? event.currentTarget : null;
+
+  checkoutInFlight = true;
+
+  if (button) {
+    button.disabled = true;
+  }
+
+  try {
+    await checkout(paymentMethod, amountReceived);
+  } finally {
+    checkoutInFlight = false;
+
+    if (button) {
+      button.disabled = false;
+    }
+  }
+}
+
+/* =========================================================
+   SESSION MODAL
+========================================================= */
+
+function showOpenSessionModal() {
+  const modal = document.getElementById("session-modal");
+
+  if (!modal) {
+    return;
+  }
+
+  modal.classList.remove("hidden");
+  modal.classList.add("flex");
+
+  loadSessionWarehouses();
+
+  refreshIcons();
+}
+
+function hideOpenSessionModal() {
+  const modal = document.getElementById("session-modal");
+
+  if (!modal) {
+    return;
+  }
+
+  modal.classList.add("hidden");
+  modal.classList.remove("flex");
+}
+
+async function startPOSSession() {
+  await openSession();
+}
+
+/* =========================================================
+   RECEIPT
+========================================================= */
+
+function showNotification(message, type = "success") {
+  const box = document.getElementById("notification");
+
+  if (!box) {
+    return;
+  }
+
+  box.textContent = message;
+
+  box.classList.remove("hidden");
+
+  if (type === "error") {
+    box.className =
+      "fixed top-4 right-4 bg-red-500 text-white p-3 rounded shadow z-50";
+  } else {
+    box.className =
+      "fixed top-4 right-4 bg-green-500 text-white p-3 rounded shadow z-50";
+  }
+
+  setTimeout(() => {
+    box.classList.add("hidden");
+  }, 2500);
+}
+
+/* =========================================================
+   RECEIPT (popup-safe) + LAST RECEIPT
+========================================================= */
+
+const LAST_RECEIPT_KEY = "pos-last-receipt";
+
+function receiptUrl(orderId) {
+  return `/receipt.html?type=sale&id=${encodeURIComponent(Number(orderId))}`;
+}
+
+function rememberLastReceipt(orderId, number) {
+  const entry = { orderId: Number(orderId), number: String(number || ""), tenantId: getCachedTenant()?.id ?? null };
+  try {
+    sessionStorage.setItem(LAST_RECEIPT_KEY, JSON.stringify(entry));
+  } catch {
+    // Storage unavailable: the button still works for this page view.
+  }
+  lastReceipt = entry;
+  updateLastReceiptButton();
+}
+
+let lastReceipt = null;
+
+function loadLastReceipt() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(LAST_RECEIPT_KEY) || "null");
+    // Never offer another business's receipt after a switch.
+    lastReceipt = stored && stored.orderId && stored.tenantId === (getCachedTenant()?.id ?? null) ? stored : null;
+  } catch {
+    lastReceipt = null;
+  }
+  updateLastReceiptButton();
+}
+
+function updateLastReceiptButton() {
+  const button = document.getElementById("pos-last-receipt");
+  if (!button) return;
+  button.disabled = !lastReceipt;
+  button.title = lastReceipt ? `Reopen receipt ${lastReceipt.number || `#${lastReceipt.orderId}`}` : "No receipt yet in this session";
+}
+
+/** Print a sale's receipt without leaving the till (hidden frame). */
+function printReceipt(orderId, number = "") {
+  rememberLastReceipt(orderId, number);
+  printReceiptInFrame(orderId);
+}
+
+function reopenLastReceipt() {
+  if (!lastReceipt) {
+    showNotification("No receipt yet in this session.", "error");
+    return;
+  }
+  // The receipt page records the print; copies after the first print as reprints.
+  printReceiptInFrame(lastReceipt.orderId);
+  showNotification("Reprinting the last receiptÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦", "success");
+}
+
+/** Print the receipt page inside a hidden same-origin frame (it prints itself on load). */
+function printReceiptInFrame(orderId) {
+  document.getElementById("pos-receipt-frame")?.remove();
+  const frame = document.createElement("iframe");
+  frame.id = "pos-receipt-frame";
+  frame.title = "Receipt";
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+  frame.src = receiptUrl(orderId);
+  document.body.appendChild(frame);
+  setTimeout(() => frame.remove(), 120000);
+}
+
+/*
+ * The receipt page (receipt.js) posts {type: "pos-receipt", status, message}
+ * to its parent. Only messages from our own frame and origin are trusted.
+ */
+function handleReceiptFrameMessage(event) {
+  const frame = document.getElementById("pos-receipt-frame");
+  if (event?.origin !== window.location.origin) return;
+  if (!frame || event.source !== frame.contentWindow) return;
+  const data = event.data || {};
+  if (data.type !== "pos-receipt" || data.status !== "error") return;
+  showNotification(`Receipt could not be printed: ${String(data.message || "unknown error")}`, "error");
+  showReceiptFallback(lastReceipt, { title: "Receipt could not be printed" });
+}
+
+let receiptMessagesBound = false;
+function bindReceiptFrameMessages() {
+  if (receiptMessagesBound) return;
+  receiptMessagesBound = true;
+  globalThis.window?.addEventListener?.("message", handleReceiptFrameMessage);
+}
+
+function showReceiptFallback(entry, { title = "Receipt could not be printed" } = {}) {
+  if (!entry) return;
+  const label = entry.number ? `receipt ${escapeHtml(entry.number)}` : "the receipt";
+  openModal({
+    title,
+    hideSubmit: true,
+    html: `
+      <p class="text-sm text-slate-600">The sale is saved. ${label.charAt(0).toUpperCase() + label.slice(1)} could not be printed automatically.</p>
+      <div class="mt-5 flex flex-wrap gap-3">
+        <a href="${escapeHtml(receiptUrl(entry.orderId))}" target="_blank" data-receipt-open
+           class="inline-flex h-11 items-center rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white hover:bg-slate-800">Open receipt</a>
+        <button type="button" data-receipt-print
+           class="h-11 rounded-xl border border-slate-200 px-5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Print here</button>
+      </div>
+      <p class="mt-4 text-xs text-slate-500">You can reprint it any time with ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œLast receiptÃƒÂ¢Ã¢â€šÂ¬Ã‚Â.</p>`,
+  });
+  const root = document.getElementById("ui-modal-root");
+  root?.querySelector("[data-receipt-print]")?.addEventListener("click", () => {
+    printReceiptInFrame(entry.orderId);
+    showNotification("Preparing the receipt for printingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦", "success");
+  });
+}
+
+/*
+ * Tell the cashier the FBR outcome of the sale just completed. The sale itself
+ * is saved whatever happens here; anything but a genuine acceptance is shown as
+ * a warning so a non-fiscalized receipt is never mistaken for an FBR invoice.
+ */
+const FISCAL_CASHIER_MESSAGES = {
+  pending: "FBR pending - not yet fiscalized",
+  // Cashiers usually cannot open the Fiscal screens: tell them who acts.
+  unknown: "FBR outcome unknown - tell your manager (it must be checked before any resend)",
+  failed: "FBR not reached yet - tell your manager (it can be resent)",
+  rejected: "Rejected by FBR",
+  not_submitted: "Not sent to FBR",
+  not_fiscalized: "Not sent to FBR",
+  simulated: "SIMULATED only - NOT fiscalized by FBR",
+};
+
+function notifyFiscalStatus(fiscal) {
+  if (!fiscal || !fiscal.status || fiscal.status === "not_configured") {
+    return;
+  }
+  if (fiscal.status === "accepted" && fiscal.fbr_invoice_number) {
+    showNotification(`Sale completed - FBR invoice ${fiscal.fbr_invoice_number}`, "success");
+    return;
+  }
+  const base = FISCAL_CASHIER_MESSAGES[fiscal.status] || "Not fiscalized by FBR";
+  const detail = fiscal.message ? `: ${String(fiscal.message).slice(0, 160)}` : "";
+  showNotification(`Sale saved. ${base}${detail}`, "error");
+}
+
+/* =========================================================
+   PARKED SALES (hold a cart and resume it later)
+========================================================= */
+
+function setModal(id, open) {
+  const modal = document.getElementById(id);
+  if (!modal) return;
+  modal.classList.toggle("hidden", !open);
+  modal.classList.toggle("flex", open);
+}
+
+function setFormError(id, message) {
+  const box = document.getElementById(id);
+  if (!box) return;
+  box.textContent = message || "";
+  box.classList.toggle("hidden", !message);
+}
+
+function updateParkedCount() {
+  const counter = document.getElementById("parked-count");
+  if (counter) counter.textContent = String(parkedSales.length);
+}
+
+async function refreshParkedCount() {
+  try {
+    const rows = await apiJson("/api/pos/parked-sales/");
+    parkedSales = Array.isArray(rows) ? rows : [];
+    updateParkedCount();
+  } catch (error) {
+    console.error("Failed to load parked sales", error);
+  }
+}
+
+function removeCart(cartId) {
+  carts = carts.filter((cart) => cart.id !== cartId);
+  if (activeCartId === cartId) {
+    activeCartId = carts.length ? carts[carts.length - 1].id : null;
+  }
+  currentPreview = getActiveCart()?.preview || null;
+  paymentQuote = null;
+  renderTabs();
+  renderCart();
+  updateCustomerDropdown();
+}
+
+function openParkModal() {
+  const cart = getActiveCart();
+  if (!cart || !cart.items.length) {
+    showNotification("Add items before parking a sale", "error");
+    return;
+  }
+  if (!guardCartEditable(cart)) {
+    return;
+  }
+  document.getElementById("park-label").value = "";
+  setFormError("park-error", "");
+  setModal("park-modal", true);
+}
+
+function closeParkModal() {
+  setModal("park-modal", false);
+}
+
+async function confirmPark() {
+  const cart = getActiveCart();
+  if (!cart || !cart.items.length) {
+    closeParkModal();
+    return;
+  }
+  const label = document.getElementById("park-label").value.trim();
+  const customerId = getCustomerId(cart);
+  const button = document.getElementById("park-confirm");
+  button.disabled = true;
+  try {
+    await apiJson("/api/pos/parked-sales/", {
+      method: "POST",
+      body: JSON.stringify({
+        label,
+        customer_id: customerId ? Number(customerId) : null,
+        items: getCartItemsPayload(cart),
+      }),
+    });
+    // Parked sales store items and customer only (backend payload), so say
+    // so instead of silently dropping a discount.
+    const hadDiscount = effectiveDiscount(cart, canDiscount()) !== "0.00";
+    removeCart(cart.id);
+    closeParkModal();
+    showNotification(hadDiscount ? "Sale parked. The discount is not saved with parked sales; re-enter it after resuming." : "Sale parked");
+    refreshParkedCount();
+  } catch (error) {
+    setFormError("park-error", error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function openParkedSalesModal() {
+  setModal("parked-modal", true);
+  const list = document.getElementById("parked-list");
+  list.innerHTML = `<p class="py-8 text-center text-sm text-slate-400">LoadingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦</p>`;
+  try {
+    const rows = await apiJson("/api/pos/parked-sales/");
+    parkedSales = Array.isArray(rows) ? rows : [];
+    updateParkedCount();
+    renderParkedSales();
+  } catch (error) {
+    list.innerHTML = `<p class="py-8 text-center text-sm text-red-600">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function closeParkedSalesModal() {
+  setModal("parked-modal", false);
+}
+
+function renderParkedSales() {
+  const list = document.getElementById("parked-list");
+  if (!parkedSales.length) {
+    list.innerHTML = `<p class="py-8 text-center text-sm text-slate-400">No parked sales in this session.</p>`;
+    return;
+  }
+  list.innerHTML = parkedSales
+    .map((sale) => {
+      const count = (sale.payload?.items || []).length;
+      return `
+        <div class="flex items-center justify-between gap-4 p-4 border border-slate-200 rounded-xl">
+          <div class="min-w-0">
+            <p class="font-semibold text-slate-900 truncate">${escapeHtml(sale.label || "Untitled sale")}</p>
+            <p class="text-xs text-slate-500">${escapeHtml(sale.customer_name || "Walk-in customer")} Ãƒâ€šÃ‚Â· ${count} item(s) Ãƒâ€šÃ‚Â· ${escapeHtml(formatDateTime(sale.parked_at))}</p>
+          </div>
+          <button onclick="resumeParkedSale(${Number(sale.id)})" class="h-9 px-4 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold shrink-0">Resume</button>
+        </div>`;
+    })
+    .join("");
+}
+
+async function resumeParkedSale(parkedId) {
+  let resumed;
+  try {
+    resumed = await apiJson(`/api/pos/parked-sales/${Number(parkedId)}/resume/`, { method: "POST" });
+  } catch (error) {
+    showNotification(error.message, "error");
+    return;
+  }
+
+  const id = Date.now() + Math.floor(Math.random() * 1000);
+  const customerId = resumed.customer_id ? String(resumed.customer_id) : null;
+  const cart = {
+    ...newCart({ id, name: nextOrderName() }),
+    customer: customerId,
+    customer_id: customerId,
+    customer_name: resumed.customer_name || "",
+  };
+
+  const missing = [];
+  for (const line of resumed.payload?.items || []) {
+    const product = products.find((item) => Number(item.id) === Number(line.product_id));
+    if (!product) {
+      missing.push(line.product_id);
+      continue;
+    }
+    cart.items.push({
+      id: product.id,
+      name: product.name,
+      price: getProductPrice(product),
+      qty: Number(line.quantity),
+      image: product.image,
+      stock_quantity: getProductStock(product),
+      sku: product.sku,
+      barcode: product.barcode,
+    });
+  }
+
+  carts.push(cart);
+  activeCartId = id;
+  currentPreview = null;
+  closeParkedSalesModal();
+  renderTabs();
+  renderCart();
+  updateCustomerDropdown();
+  refreshParkedCount();
+
+  if (missing.length) {
+    showNotification(`${missing.length} item(s) are no longer available and were skipped`, "error");
+  } else {
+    showNotification("Parked sale resumed");
+  }
+  if (cart.items.length) {
+    await previewCurrentCart();
+  }
+}
+
+/* =========================================================
+   CASH IN / CASH OUT (drawer movements in the active session)
+========================================================= */
+
+function openCashModal() {
+  if (!sessionOpen) {
+    showNotification("Open a cash session first", "error");
+    return;
+  }
+  document.getElementById("cash-amount").value = "";
+  document.getElementById("cash-reason").value = "";
+  setFormError("cash-error", "");
+  setModal("cash-modal", true);
+}
+
+function closeCashModal() {
+  setModal("cash-modal", false);
+}
+
+async function submitCashMovement() {
+  const type = document.getElementById("cash-type").value;
+  const amount = Number(document.getElementById("cash-amount").value);
+  const reason = document.getElementById("cash-reason").value.trim();
+
+  if (!(amount > 0)) {
+    setFormError("cash-error", "Enter an amount greater than zero.");
+    return;
+  }
+  if (!reason) {
+    setFormError("cash-error", "Enter a reason for this movement.");
+    return;
+  }
+
+  const button = document.getElementById("cash-confirm");
+  button.disabled = true;
+  try {
+    await apiJson("/api/pos/cash-movements/", {
+      method: "POST",
+      body: JSON.stringify({ type, amount: amount.toFixed(2), reason }),
+    });
+    closeCashModal();
+    showNotification(type === "in" ? "Cash added to the drawer" : "Cash removed from the drawer");
+  } catch (error) {
+    setFormError("cash-error", error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/* =========================================================
+   GLOBAL UI BRIDGE
+========================================================= */
+
+window.openSession = openSession;
+
+window.startPOSSession = startPOSSession;
+
+window.closeSession = closeSession;
+
+window.showOpenSessionModal = showOpenSessionModal;
+
+window.hideOpenSessionModal = hideOpenSessionModal;
+
+window.searchProducts = searchProducts;
+
+window.assignCustomer = assignCustomer;
+
+window.saveNote = saveNote;
+
+window.renderCart = renderCart;
+
+window.createOrder = createOrder;
+
+window.switchOrder = switchOrder;
+
+window.addToCart = addToCart;
+
+window.increaseQty = increaseQty;
+
+window.decreaseQty = decreaseQty;
+
+window.removeItem = removeItem;
+
+window.filterCategory = filterCategory;
+
+window.checkout = checkout;
+
+window.openPaymentModal = openPaymentModal;
+
+window.closePaymentModal = closePaymentModal;
+
+window.calculateChange = calculateChange;
+
+window.confirmPayment = confirmPayment;
+
+window.openSelectCustomerModal = openSelectCustomerModal;
+window.closeSelectCustomerModal = closeSelectCustomerModal;
+window.openAddCustomerFromPicker = openAddCustomerFromPicker;
+window.selectWalkInCustomer = selectWalkInCustomer;
+window.showCustomerModal = showCustomerModal;
+window.openParkModal = openParkModal;
+window.closeParkModal = closeParkModal;
+window.confirmPark = confirmPark;
+window.openParkedSalesModal = openParkedSalesModal;
+window.closeParkedSalesModal = closeParkedSalesModal;
+window.resumeParkedSale = resumeParkedSale;
+window.openCashModal = openCashModal;
+window.closeCashModal = closeCashModal;
+window.submitCashMovement = submitCashMovement;
+
+window.closeCustomerModal = closeCustomerModal;
+
+window.createCustomer = createCustomer;
+window.reopenLastReceipt = reopenLastReceipt;
+window.setCartDiscount = setCartDiscount;
+window.retryPendingCheckout = retryPendingCheckout;
+window.discardPendingCheckout = discardPendingCheckout;
+
+
+/* =========================================================
+   INITIALIZATION
+========================================================= */
+
+async function initializePOS() {
+  bindReceiptFrameMessages();
+  loadLastReceipt();
+  const hasSession = await loadSession();
+
+  await loadProducts();
+  await loadCategories();
+  await loadCustomers();
+
+  if (hasSession) {
+    /*
+     * Start with one browser-local order.
+     */
+    carts = [];
+    activeCartId = null;
+
+    createOrder();
+  } else {
+    carts = [];
+    activeCartId = null;
+
+    renderTabs();
+    renderCart();
+
+    showOpenSessionModal();
+  }
+
+  refreshIcons();
+}
+
+window.initializePOS = initializePOS;
+
+/* =========================================================
+   NAVIGATION
+========================================================= */
+
+function navigateBackFromPOS() {
+  window.location.hash = "#/dashboard";
+}
+
+window.navigateBackFromPOS = navigateBackFromPOS;
+
+
