@@ -458,6 +458,7 @@ export async function getRoles(filters = {}) {
     return {
         ...response,
         count: filtered.length,
+        active_count: filtered.filter((role) => role.is_active).length,
         page,
         total_pages: totalPages,
         has_next: page < totalPages,
