@@ -94,6 +94,17 @@ class Phase6CanonicalPOSTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
 
+    def test_checkout_rejects_line_total_above_order_money_capacity_without_mutation(self):
+        response = self._checkout(
+            items=[{"product_id": self.product.id, "quantity": "3000000000"}],
+            idempotency_key="line-total-overflow",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("cart line total exceeds", str(response.data).lower())
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
     def test_checkout_rejects_quantity_above_order_item_capacity_without_mutation(self):
         response = self._checkout(
             items=[{"product_id": self.product.id, "quantity": "100000000"}],
