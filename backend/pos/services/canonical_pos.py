@@ -131,6 +131,9 @@ def _cart_quantity(value):
     quantity = decimal(value, field="quantity")
     if quantity.normalize().as_tuple().exponent < -2:
         raise ValueError("Cart quantities support at most 2 decimal places.")
+    # OrderItem.quantity is DecimalField(max_digits=10, decimal_places=2).
+    if quantity > Decimal("99999999.99"):
+        raise ValueError("Cart quantities cannot exceed 99,999,999.99.")
     return quantity
 
 
@@ -328,6 +331,8 @@ def _normalise_items(*, tenant, items):
         if quantity <= 0:
             raise ValueError("Cart quantities must be greater than zero.")
         quantities[product_id] += quantity
+        if quantities[product_id] > Decimal("99999999.99"):
+            raise ValueError("Combined cart quantity cannot exceed 99,999,999.99 for a product.")
     products = Product.objects.select_for_update().filter(tenant=tenant, is_active=True, id__in=quantities).order_by("id")
     by_id = {product.id: product for product in products}
     missing = set(quantities) - set(by_id)
