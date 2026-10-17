@@ -94,6 +94,31 @@ class Phase6CanonicalPOSTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
 
+    def test_checkout_rejects_quantity_above_order_item_capacity_without_mutation(self):
+        response = self._checkout(
+            items=[{"product_id": self.product.id, "quantity": "100000000"}],
+            idempotency_key="quantity-overflow",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("cannot exceed 99,999,999.99", str(response.data))
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
+    def test_checkout_rejects_combined_duplicate_quantity_overflow_without_mutation(self):
+        response = self._checkout(
+            items=[
+                {"product_id": self.product.id, "quantity": "60000000"},
+                {"product_id": self.product.id, "quantity": "40000000"},
+            ],
+            idempotency_key="combined-quantity-overflow",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("Combined cart quantity cannot exceed 99,999,999.99", str(response.data))
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
     def test_checkout_rejects_quantity_precision_that_order_item_cannot_store(self):
         response = self._checkout(
             items=[{"product_id": self.product.id, "quantity": "0.001"}],
