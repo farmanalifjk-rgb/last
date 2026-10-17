@@ -126,6 +126,14 @@ def _positive_integer_id(value, *, field="product_id"):
     return parsed
 
 
+def _cart_quantity(value):
+    """Validate cart quantity precision against OrderItem.quantity's 2dp schema."""
+    quantity = decimal(value, field="quantity")
+    if quantity.normalize().as_tuple().exponent < -2:
+        raise ValueError("Cart quantities support at most 2 decimal places.")
+    return quantity
+
+
 class IdempotencyConflictError(ValueError):
     """The same idempotency key was reused for a different checkout request."""
 
@@ -152,7 +160,7 @@ def _checkout_request_hash(*, user, items, tenders, customer_id=None, discount=D
             raise ValueError("Each cart item requires a valid product_id.") from exc
         normalized_items.append({
             "product_id": product_id,
-            "quantity": str(decimal(raw.get("quantity"), field="quantity").normalize()),
+            "quantity": str(_cart_quantity(raw.get("quantity")).normalize()),
         })
     normalized_items.sort(key=lambda row: row["product_id"])
 
@@ -314,7 +322,7 @@ def _normalise_items(*, tenant, items):
     for raw in items:
         try:
             product_id = _positive_integer_id(raw["product_id"])
-            quantity = decimal(raw["quantity"], field="quantity")
+            quantity = _cart_quantity(raw["quantity"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Each cart item requires product_id and quantity.") from exc
         if quantity <= 0:
