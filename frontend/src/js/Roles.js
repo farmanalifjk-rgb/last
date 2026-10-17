@@ -1,5 +1,5 @@
 import { createIcons, icons } from "lucide";
-import { getRoles, createRole, updateRole, deleteRole } from "../js/inventory/services/inventory-api";
+import { getRoles, getGovernancePermissions, createRole, updateRole, deleteRole } from "../js/inventory/services/inventory-api";
 import { Pagination } from "../shared/Pagination";
 import { escapeHtml, loadErrorHtml } from "../shared/format.js";
 import { toast, errorMessage, confirmDialog } from "../shared/ui.js";
@@ -13,13 +13,7 @@ window.openEditRoleModalById = function(id) {
 
 let filters = { search: "", page: 1, page_size: 10 };
 
-const PERMISSION_MODULES = {
-    products: { label: "Products Catalog", actions: ["view", "create", "edit", "delete"] },
-    orders: { label: "Sales & Orders", actions: ["view", "create", "edit"] },
-    inventory: { label: "Inventory Management", actions: ["view", "edit"] },
-    reports: { label: "Analytics & Reports", actions: ["view"] },
-    configuration: { label: "System Configuration", actions: ["view", "edit"] }
-};
+let availablePermissions = [];
 
 export function RolesCard({ title, value, valueId, icon, gradient, accent, iconColor, subtitle }) {
     return `<div class="relative overflow-hidden rounded-3xl ${gradient} border border-white/70 shadow-lg hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 p-6">
@@ -65,31 +59,49 @@ const pagination = new Pagination({
 
 window.initializeRoles = async function() {
     pagination.initialize();
-    renderPermissionsChecklist();
-    await loadRoles();
+    try {
+        await loadPermissions();
+        await loadRoles();
+    } catch (error) {
+        console.error("Error initializing tenant role governance", error);
+        const container = document.getElementById("roles-table");
+        if (container) container.innerHTML = loadErrorHtml(error, "role permissions");
+    }
     initializeRolesEvents();
 };
+
+async function loadPermissions() {
+    const response = await getGovernancePermissions();
+    availablePermissions = Array.isArray(response) ? response : (response.results || []);
+    renderPermissionsChecklist();
+}
 
 function renderPermissionsChecklist() {
     const container = document.getElementById("permissions-container");
     if (!container) return;
-    
-    let html = "";
-    Object.entries(PERMISSION_MODULES).forEach(([key, mod]) => {
-        html += `
+
+    const modules = new Map();
+    availablePermissions.forEach((permission) => {
+        const key = permission.module_key || `module-${permission.module}`;
+        if (!modules.has(key)) modules.set(key, []);
+        modules.get(key).push(permission);
+    });
+
+    container.innerHTML = Array.from(modules.entries()).map(([key, permissions]) => {
+        const label = key.replace(/[-_]/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+        return `
         <div class="bg-slate-50/50 rounded-2xl p-5 border border-slate-100">
-            <h4 class="font-semibold text-slate-800 mb-3">${escapeHtml(mod.label)}</h4>
+            <h4 class="font-semibold text-slate-800 mb-3">${escapeHtml(label)}</h4>
             <div class="flex flex-wrap gap-6">
-                ${mod.actions.map(action => `
+                ${permissions.map((permission) => `
                     <label class="flex items-center gap-2 cursor-pointer group">
-                        <input type="checkbox" id="perm-${key}-${action}" class="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-gray-300">
-                        <span class="text-sm font-medium text-slate-600 group-hover:text-slate-900 capitalize">${action}</span>
+                        <input type="checkbox" id="perm-${Number(permission.id)}" data-permission-id="${Number(permission.id)}" data-sensitive="${Boolean(permission.is_sensitive)}" class="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-gray-300">
+                        <span class="text-sm font-medium text-slate-600 group-hover:text-slate-900">${escapeHtml(permission.action)}${permission.is_sensitive ? " · sensitive" : ""}</span>
                     </label>
-                `).join('')}
+                `).join("")}
             </div>
         </div>`;
-    });
-    container.innerHTML = html;
+    }).join("");
 }
 
 async function loadRoles() {
@@ -164,11 +176,11 @@ function renderRolesTable(rows) {
                 </thead>
                 <tbody class="divide-y divide-slate-100">
                     ${rows.map(role => {
-                        const permCount = role.permissions ? countPermissions(role.permissions) : 0;
+                        const permCount = Array.isArray(role.permissions) ? role.permissions.length : 0;
                         return `
                         <tr class="group hover:bg-purple-50/40 transition-colors cursor-pointer" onclick="openEditRoleModalById(${Number(role.id)})">
                             <td class="px-6 py-4">
-                                <div class="font-bold text-slate-900">${escapeHtml(role.name)}</div>
+                                <div class="font-bold text-slate-900">${escapeHtml(role.label || role.name || role.key)}</div>
                                 <div class="text-slate-400 text-xs mt-1">${escapeHtml(role.users_count || 0)} users assigned</div>
                             </td>
                             <td class="px-6 py-4 text-slate-500 truncate max-w-xs">
@@ -186,12 +198,13 @@ function renderRolesTable(rows) {
                             </td>
                             <td class="px-6 py-4 text-right" onclick="event.stopPropagation()">
                                 <div class="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button onclick="openEditRoleModalById(${Number(role.id)})" class="w-8 h-8 rounded-lg text-slate-400 hover:text-purple-600 hover:bg-purple-50 flex items-center justify-center transition">
+                                    ${role.is_system ? "" : `
+                                    <button onclick="openEditRoleModalById(${Number(role.id)})" class="w-8 h-8 rounded-lg text-slate-400 hover:text-purple-600 hover:bg-purple-50 flex items-center justify-center transition" aria-label="Edit role">
                                         <i data-lucide="edit-2" class="w-4 h-4"></i>
                                     </button>
-                                    <button onclick="deleteRole(${Number(role.id)})" class="w-8 h-8 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition">
+                                    <button onclick="deleteRole(${Number(role.id)})" class="w-8 h-8 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center transition" aria-label="Deactivate role">
                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
-                                    </button>
+                                    </button>`}
                                 </div>
                             </td>
                         </tr>
@@ -204,26 +217,12 @@ function renderRolesTable(rows) {
     document.getElementById("roles-table").innerHTML = html;
 }
 
-function countPermissions(permsObj) {
-    let count = 0;
-    try {
-        const p = typeof permsObj === 'string' ? JSON.parse(permsObj) : permsObj;
-        Object.values(p).forEach(module => {
-            if(module && typeof module === 'object') {
-                Object.values(module).forEach(val => { if(val) count++; });
-            }
-        });
-    } catch(e){}
-    return count;
-}
-
 window.openCreateRoleModal = function() {
     document.getElementById("role-id").value = "";
     document.getElementById("role-form").reset();
-    document.getElementById("role-is-active").checked = true;
     document.getElementById("role-modal-title").textContent = "Add Role";
     
-    document.querySelectorAll("input[type='checkbox'][id^='perm-']").forEach(cb => cb.checked = false);
+    document.querySelectorAll("input[data-permission-id]").forEach(cb => cb.checked = false);
     
     const modal = document.getElementById("role-form-modal");
     const content = document.getElementById("role-modal-content");
@@ -234,28 +233,17 @@ window.openCreateRoleModal = function() {
 
 window.openEditRoleModal = function(role) {
     document.getElementById("role-id").value = role.id;
-    document.getElementById("role-name").value = role.name || "";
+    document.getElementById("role-name").value = role.label || role.name || "";
     document.getElementById("role-description").value = role.description || "";
-    document.getElementById("role-is-active").checked = role.is_active;
     
     document.getElementById("role-modal-title").textContent = "Edit Role";
     
-    document.querySelectorAll("input[type='checkbox'][id^='perm-']").forEach(cb => cb.checked = false);
-    if (role.permissions) {
-        try {
-            const p = typeof role.permissions === 'string' ? JSON.parse(role.permissions) : role.permissions;
-            Object.keys(p).forEach(moduleKey => {
-                const actions = p[moduleKey];
-                if (actions && typeof actions === 'object') {
-                    Object.keys(actions).forEach(actionKey => {
-                        if (actions[actionKey]) {
-                            const cb = document.getElementById(`perm-${moduleKey}-${actionKey}`);
-                            if (cb) cb.checked = true;
-                        }
-                    });
-                }
-            });
-        } catch(e) {}
+    document.querySelectorAll("input[data-permission-id]").forEach(cb => cb.checked = false);
+    if (Array.isArray(role.permissions)) {
+        role.permissions.forEach((permission) => {
+            const cb = document.getElementById(`perm-${Number(permission.id)}`);
+            if (cb) cb.checked = true;
+        });
     }
     
     const modal = document.getElementById("role-form-modal");
@@ -277,29 +265,35 @@ window.closeRoleModal = function() {
 
 async function saveRole() {
     const id = document.getElementById("role-id").value;
-    
-    const permissions = {};
-    Object.keys(PERMISSION_MODULES).forEach(key => {
-        permissions[key] = {};
-        PERMISSION_MODULES[key].actions.forEach(action => {
-            const cb = document.getElementById(`perm-${key}-${action}`);
-            if(cb) permissions[key][action] = cb.checked;
-        });
-    });
+    const label = document.getElementById("role-name").value.trim();
+    const description = document.getElementById("role-description").value.trim();
+    const checked = Array.from(document.querySelectorAll("input[data-permission-id]:checked"));
+    const permissionIds = checked
+        .map((checkbox) => Number(checkbox.dataset.permissionId))
+        .filter((permissionId) => Number.isInteger(permissionId) && permissionId > 0);
+    const hasSensitive = checked.some((checkbox) => checkbox.dataset.sensitive === "true");
+
+    if (!label) {
+        toast("Role name is required.", "error");
+        return;
+    }
+    if (hasSensitive && !window.confirm("This role includes sensitive permissions. Confirm that these permissions are required.")) {
+        return;
+    }
 
     const data = {
-        name: document.getElementById("role-name").value,
-        description: document.getElementById("role-description").value,
-        is_active: document.getElementById("role-is-active").checked,
-        permissions: JSON.stringify(permissions)
+        label,
+        description,
+        permission_ids: permissionIds,
+        confirm_sensitive: hasSensitive
     };
+    if (!id) {
+        data.key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    }
 
     try {
-        if (id) {
-            await updateRole(id, data);
-        } else {
-            await createRole(data);
-        }
+        if (id) await updateRole(id, data);
+        else await createRole(data);
         closeRoleModal();
         await loadRoles();
     } catch (error) {
@@ -309,7 +303,7 @@ async function saveRole() {
 }
 
 window.deleteRole = async function(id) {
-    if (await confirmDialog({ title: "Delete role", message: "Are you sure you want to delete this role?", confirmLabel: "Delete" })) {
+    if (await confirmDialog({ title: "Deactivate role", message: "This role will be deactivated for this tenant. Continue?", confirmLabel: "Deactivate" })) {
         try {
             await deleteRole(id);
             await loadRoles();
