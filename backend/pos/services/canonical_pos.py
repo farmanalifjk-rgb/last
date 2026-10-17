@@ -111,6 +111,21 @@ def _enforce_buyer_identification(*, tenant, customer, total):
     )
 
 
+def _positive_integer_id(value, *, field="product_id"):
+    """Accept integer IDs and digit-only strings; reject bools and fractional numbers."""
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be a positive integer.")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        raise ValueError(f"{field} must be a positive integer.")
+    if parsed <= 0:
+        raise ValueError(f"{field} must be a positive integer.")
+    return parsed
+
+
 class IdempotencyConflictError(ValueError):
     """The same idempotency key was reused for a different checkout request."""
 
@@ -132,7 +147,7 @@ def _checkout_request_hash(*, user, items, tenders, customer_id=None, discount=D
         if not isinstance(raw, dict):
             raise ValueError("Each cart item must be an object.")
         try:
-            product_id = int(raw["product_id"])
+            product_id = _positive_integer_id(raw["product_id"])
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Each cart item requires a valid product_id.") from exc
         normalized_items.append({
@@ -298,7 +313,7 @@ def _normalise_items(*, tenant, items):
     quantities = defaultdict(lambda: Decimal("0"))
     for raw in items:
         try:
-            product_id = int(raw["product_id"])
+            product_id = _positive_integer_id(raw["product_id"])
             quantity = decimal(raw["quantity"], field="quantity")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Each cart item requires product_id and quantity.") from exc

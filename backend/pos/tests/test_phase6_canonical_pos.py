@@ -127,6 +127,28 @@ class Phase6CanonicalPOSTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
 
+    def test_checkout_rejects_fractional_product_id_without_mutation(self):
+        response = self._checkout(
+            items=[{"product_id": self.product.id + 0.9, "quantity": "1"}],
+            idempotency_key="fractional-product-id",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("valid product_id", str(response.data))
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
+    def test_checkout_rejects_boolean_product_id_without_mutation(self):
+        response = self._checkout(
+            items=[{"product_id": True, "quantity": "1"}],
+            idempotency_key="boolean-product-id",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("valid product_id", str(response.data))
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
     def test_preview_uses_tenant_price_rule_and_tax_engine(self):
         response = self.client.post("/api/pos/preview/", {"items": [{"product_id": self.product.id, "quantity": "2.000"}]}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
