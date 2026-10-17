@@ -131,9 +131,13 @@ def _checkout_request_hash(*, user, items, tenders, customer_id=None, discount=D
     for raw in items:
         if not isinstance(raw, dict):
             raise ValueError("Each cart item must be an object.")
+        try:
+            product_id = int(raw["product_id"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Each cart item requires a valid product_id.") from exc
         normalized_items.append({
-            "product_id": int(raw["product_id"]),
-            "quantity": str(decimal(raw["quantity"], field="quantity").normalize()),
+            "product_id": product_id,
+            "quantity": str(decimal(raw.get("quantity"), field="quantity").normalize()),
         })
     normalized_items.sort(key=lambda row: row["product_id"])
 
