@@ -94,6 +94,17 @@ class Phase6CanonicalPOSTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
 
+    def test_checkout_rejects_quantity_precision_that_order_item_cannot_store(self):
+        response = self._checkout(
+            items=[{"product_id": self.product.id, "quantity": "0.001"}],
+            idempotency_key="quantity-precision",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("at most 2 decimal places", str(response.data))
+        self.assertEqual(Order.objects.filter(tenant=self.tenant).count(), 0)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock_quantity, Decimal("10.000"))
+
     def test_checkout_rejects_non_finite_quantity_without_mutation(self):
         response = self._checkout(
             items=[{"product_id": self.product.id, "quantity": "NaN"}],
